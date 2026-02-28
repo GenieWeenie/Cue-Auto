@@ -8,7 +8,7 @@ import pytest
 
 from cue_agent.config import CueConfig
 from cue_agent.heartbeat.scheduler import Heartbeat
-from cue_agent.heartbeat.tasks import daily_summary, health_check
+from cue_agent.heartbeat.tasks import consolidate_vector_memory, daily_summary, health_check
 
 
 class _FakeScheduler:
@@ -126,6 +126,50 @@ async def test_daily_summary_with_context_calls_brain():
 
 
 @pytest.mark.asyncio
+async def test_daily_summary_includes_operational_sections():
+    class _FakeBrain:
+        def chat(self, prompt: str) -> str:  # noqa: ARG002
+            return "ops summary"
+
+    class _FakeMemory:
+        def get_context(self, chat_id: str, limit: int):  # noqa: ARG002
+            return "activity"
+
+    class _FakeBot:
+        def __init__(self):
+            self.sent: list[dict] = []
+
+        async def send_message(self, **kwargs):
+            self.sent.append(kwargs)
+
+    queue = SimpleNamespace(queue_stats=lambda: {"pending": 1, "failed": 2})
+    router = SimpleNamespace(
+        health_status=lambda: {"openai": "up"},
+        usage_summary=lambda: {"month": "2026-02", "total_estimated_cost_usd": 12.34},
+    )
+    notifier = SimpleNamespace(
+        event_counters=lambda: {"task_completion": 3, "budget_warning": 1},
+        recent_errors=lambda limit=5: ["provider timeout"],  # noqa: ARG005
+    )
+    bot = _FakeBot()
+    await daily_summary(
+        _FakeBrain(),
+        _FakeMemory(),
+        bot,
+        admin_chat_id=1,
+        task_queue=queue,
+        router=router,
+        notifier=notifier,
+    )
+    text = bot.sent[0]["text"]
+    assert "**Task Queue**" in text
+    assert "**Tools & Alerts**" in text
+    assert "**Costs**" in text
+    assert "**Provider Health**" in text
+    assert "**Recent Errors**" in text
+
+
+@pytest.mark.asyncio
 async def test_health_check_logs_provider_states(monkeypatch):
     records: list[tuple[int, str, str]] = []
 
@@ -140,3 +184,63 @@ async def test_health_check_logs_provider_states(monkeypatch):
         (20, "openai", "OK"),
         (30, "anthropic", "UNREACHABLE"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_vector_memory_consolidation_noop_when_unavailable():
+    class _FakeBrain:
+        def chat(self, prompt: str) -> str:  # noqa: ARG002
+            return "summary"
+
+    class _FakeVectorMemory:
+        is_available = False
+
+        def consolidate_all(self, **kwargs):  # noqa: ARG002
+            raise AssertionError("should not be called")
+
+    await consolidate_vector_memory(
+        _FakeBrain(),
+        _FakeVectorMemory(),
+        min_entries=10,
+        keep_recent=5,
+        max_items=50,
+    )
+
+
+@pytest.mark.asyncio
+async def test_vector_memory_consolidation_invokes_summarizer():
+    class _FakeBrain:
+        def __init__(self):
+            self.prompts: list[str] = []
+
+        def chat(self, prompt: str) -> str:
+            self.prompts.append(prompt)
+            return "summary bullets"
+
+    class _FakeVectorMemory:
+        is_available = True
+
+        def __init__(self):
+            self.called_with: dict = {}
+
+        def consolidate_all(self, **kwargs):
+            self.called_with = kwargs
+            summary = kwargs["summarizer"]("chat-1", ["alpha", "beta"])
+            assert "summary bullets" == summary
+            return {"consolidated_chats": 1, "deleted_entries": 2}
+
+    brain = _FakeBrain()
+    vm = _FakeVectorMemory()
+    await consolidate_vector_memory(
+        brain,
+        vm,
+        min_entries=10,
+        keep_recent=5,
+        max_items=50,
+    )
+
+    assert vm.called_with["min_entries"] == 10
+    assert vm.called_with["keep_recent"] == 5
+    assert vm.called_with["max_items"] == 50
+    assert len(brain.prompts) == 1
+    assert "Memories:" in brain.prompts[0]

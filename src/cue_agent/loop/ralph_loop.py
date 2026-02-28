@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from environment.executor import AsyncLocalExecutor
@@ -16,8 +16,10 @@ from cue_agent.brain.cue_brain import CueBrain
 from cue_agent.config import CueConfig
 from cue_agent.logging_utils import correlation_context, new_correlation_id
 from cue_agent.loop.task_picker import TaskPicker
+from cue_agent.loop.task_queue import TASK_STATUS_PENDING, TaskQueue
 from cue_agent.loop.verifier import Verifier
 from cue_agent.memory.session_memory import SessionMemory
+from cue_agent.memory.vector_memory import VectorMemory
 from cue_agent.retry_utils import backoff_delay_seconds
 from cue_agent.security.approval_gate import ApprovalGate
 
@@ -38,14 +40,20 @@ class RalphLoop:
         state_manager: StateManager,
         approval_gate: ApprovalGate,
         config: CueConfig,
+        vector_memory: VectorMemory | None = None,
+        task_queue: TaskQueue | None = None,
+        notification_handler: Callable[[dict[str, Any]], None] | None = None,
     ):
         self.brain = brain
         self.memory = memory
+        self.vector_memory = vector_memory
+        self.task_queue = task_queue
         self.actions = actions
         self.executor = executor
         self.state = state_manager
         self.approval_gate = approval_gate
         self.config = config
+        self._notification_handler = notification_handler
         self._task_picker = TaskPicker(brain)
         self._verifier = Verifier(brain)
         self._running = False
@@ -103,14 +111,32 @@ class RalphLoop:
         context = self._build_context()
 
         # 2. PICK — select next task
-        task = self._task_picker.pick(context)
+        selected_task_id: int | None = None
+        task = None
+        if self.task_queue is not None and self.config.task_queue_enabled:
+            queued = self.task_queue.next_unblocked_task()
+            if queued is not None:
+                selected_task_id = int(queued["id"])
+                task = str(queued["title"])
+                description = str(queued.get("description", "")).strip()
+                if description:
+                    task = f"{task}\n\nContext: {description}"
+                self.task_queue.mark_in_progress(selected_task_id)
+                self._maybe_create_subtasks(queued)
+
         if task is None:
-            logger.info("Idle — no tasks to execute")
-            return
+            task = self._task_picker.pick(context)
+            if task is None:
+                logger.info("Idle — no tasks to execute")
+                return
 
         # 3. PLAN — generate EAP macro
         manifest = self.actions.get_hashed_manifest()
         memory_ctx = self.memory.get_context(LOOP_CHAT_ID, limit=10)
+        if self.vector_memory is not None:
+            vector_ctx = self.vector_memory.recall_as_context(LOOP_CHAT_ID, task)
+            if vector_ctx:
+                memory_ctx = f"{memory_ctx}\n\n{vector_ctx}" if memory_ctx else vector_ctx
         macro = self.brain.plan(task, manifest, memory_context=memory_ctx)
         logger.info("Generated macro with %d steps", len(macro.steps))
 
@@ -119,15 +145,53 @@ class RalphLoop:
 
         # 5. EXECUTE — run via EAP's AsyncLocalExecutor
         run_id = f"loop_{self._iteration_count}_{uuid4().hex[:6]}"
-        result = await self._execute_macro_with_retry(macro, run_id=run_id)
+        try:
+            result = await self._execute_macro_with_retry(macro, run_id=run_id)
+        except Exception as exc:
+            if selected_task_id is not None and self.task_queue is not None:
+                self.task_queue.mark_failed(
+                    selected_task_id,
+                    error=str(exc),
+                    retry_limit=self.config.task_queue_retry_failed_attempts,
+                )
+                self._emit_notification(
+                    category="task_completion",
+                    priority="high",
+                    title=f"Task #{selected_task_id} failed",
+                    body=str(exc),
+                )
+            raise
 
         # 6. VERIFY — check success
         result_str = str(result) if result else "No output"
         verification = self._verifier.verify(task, result_str)
+        if selected_task_id is not None and self.task_queue is not None:
+            if verification.success:
+                self.task_queue.mark_done(selected_task_id)
+                self._emit_notification(
+                    category="task_completion",
+                    priority="medium",
+                    title=f"Task #{selected_task_id} completed",
+                    body=verification.summary,
+                )
+            else:
+                self.task_queue.mark_failed(
+                    selected_task_id,
+                    error=verification.summary,
+                    retry_limit=self.config.task_queue_retry_failed_attempts,
+                )
+                self._emit_notification(
+                    category="task_completion",
+                    priority="high",
+                    title=f"Task #{selected_task_id} failed verification",
+                    body=verification.summary,
+                )
 
         # 7. COMMIT — record in memory
         outcome = f"Task: {task}\nResult: {verification.summary}"
         self.memory.add_turn(LOOP_CHAT_ID, "assistant", outcome, run_id=run_id)
+        if self.vector_memory is not None:
+            self.vector_memory.add_turn(LOOP_CHAT_ID, "assistant", outcome, run_id=run_id)
         logger.info(
             "Loop iteration complete",
             extra={
@@ -136,6 +200,19 @@ class RalphLoop:
                 "run_id": run_id,
                 "success": verification.success,
             },
+        )
+
+    def _emit_notification(self, *, category: str, priority: str, title: str, body: str) -> None:
+        if self._notification_handler is None:
+            return
+        self._notification_handler(
+            {
+                "event": category,
+                "priority": priority,
+                "title": title,
+                "body": body,
+                "source": "loop",
+            }
         )
 
     async def _execute_macro_with_retry(self, macro: Any, run_id: str) -> Any:
@@ -178,4 +255,79 @@ class RalphLoop:
         else:
             parts.append("Recent activity: none")
 
+        if self.task_queue is not None and self.config.task_queue_enabled:
+            queued = self.task_queue.list_tasks(status=TASK_STATUS_PENDING, limit=5)
+            if queued:
+                queue_lines = "\n".join(f"- #{task['id']} p{task['priority']}: {task['title']}" for task in queued)
+                parts.append(f"Queued tasks:\n{queue_lines}")
+            else:
+                parts.append("Queued tasks: none")
+
         return "\n\n".join(parts)
+
+    def _maybe_create_subtasks(self, parent_task: dict[str, Any]) -> None:
+        if self.task_queue is None:
+            return
+        if not self.config.task_queue_auto_subtasks_enabled:
+            return
+
+        parent_id = int(parent_task["id"])
+        if self.task_queue.child_count(parent_id) > 0:
+            return
+
+        max_items = max(1, self.config.task_queue_auto_subtasks_max)
+        prompt = (
+            "Break the following task into actionable sub-tasks.\n"
+            f"Return up to {max_items} lines, one per sub-task.\n"
+            "Use bullet lines only. If no sub-tasks are needed, respond with NOTHING.\n\n"
+            f"Task:\n{parent_task['title']}\n{parent_task.get('description', '')}"
+        )
+        response = self.brain.chat(prompt)
+        subtasks = _parse_subtasks(response, max_items=max_items)
+        parent_priority = int(parent_task.get("priority", 3))
+        child_priority = min(4, parent_priority + 1)
+        for subtask in subtasks:
+            try:
+                self.task_queue.create_subtask(
+                    parent_task_id=parent_id,
+                    title=subtask,
+                    priority=child_priority,
+                    source="agent_autosubtask",
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to create auto sub-task",
+                    extra={
+                        "event": "task_queue_subtask_create_failed",
+                        "parent_task_id": parent_id,
+                    },
+                )
+
+
+def _parse_subtasks(text: str, max_items: int) -> list[str]:
+    stripped = text.strip()
+    if not stripped:
+        return []
+    if "NOTHING" in stripped.upper():
+        return []
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw_line in stripped.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(("- ", "* ")):
+            line = line[2:].strip()
+        elif "." in line and line.split(".", 1)[0].isdigit():
+            line = line.split(".", 1)[1].strip()
+        if not line:
+            continue
+        norm = line.lower()
+        if norm in seen:
+            continue
+        seen.add(norm)
+        items.append(line)
+        if len(items) >= max_items:
+            break
+    return items

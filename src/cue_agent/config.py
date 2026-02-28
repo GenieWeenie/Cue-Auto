@@ -30,15 +30,51 @@ class CueConfig(BaseSettings):
     # LLM behavior
     llm_temperature: float = 0.0
     llm_timeout_seconds: int = 60
+    llm_budget_warning_usd: float = 20.0
+    llm_monthly_budget_usd: float = 50.0
+    llm_budget_enforce_hard_stop: bool = True
+    llm_cost_openai_input_per_1k: float = 0.005
+    llm_cost_openai_output_per_1k: float = 0.015
+    llm_cost_anthropic_input_per_1k: float = 0.003
+    llm_cost_anthropic_output_per_1k: float = 0.015
+    llm_cost_openrouter_input_per_1k: float = 0.003
+    llm_cost_openrouter_output_per_1k: float = 0.010
+    llm_cost_lmstudio_input_per_1k: float = 0.0
+    llm_cost_lmstudio_output_per_1k: float = 0.0
 
     # --- Communication / Telegram ---
     telegram_bot_token: str = ""
     telegram_admin_chat_id: int = 0
     telegram_webhook_url: str = ""
+    notifications_enabled: bool = True
+    notification_delivery_mode: str = "immediate"
+    notification_priority_threshold: str = "medium"
+    notification_quiet_hours_start: int = 22
+    notification_quiet_hours_end: int = 7
+    notification_timezone: str = "UTC"
+    notification_hourly_digest_cron: str = "0 * * * *"
+    notification_daily_digest_cron: str = "0 8 * * *"
 
     # --- Memory / State ---
     state_db_path: str = "cue_state.db"
     soul_md_path: str = "SOUL.md"
+    vector_memory_enabled: bool = False
+    vector_memory_path: str = "data/vector_memory"
+    vector_memory_collection: str = "cue_agent_memory"
+    vector_memory_top_k: int = 4
+    vector_memory_consolidation_enabled: bool = True
+    vector_memory_consolidation_cron: str = "0 */6 * * *"
+    vector_memory_consolidation_min_entries: int = 30
+    vector_memory_consolidation_keep_recent: int = 20
+    vector_memory_consolidation_max_items: int = 120
+
+    # --- Web Search ---
+    search_provider: str = "auto"
+    search_max_results: int = 5
+    search_region: str = "us-en"
+    search_rate_limit_seconds: float = 1.0
+    tavily_api_key: str = ""
+    serpapi_api_key: str = ""
 
     # --- Heartbeat ---
     heartbeat_enabled: bool = False
@@ -46,6 +82,9 @@ class CueConfig(BaseSettings):
 
     # --- Security ---
     high_risk_tools: list[str] = ["run_shell", "write_file", "send_telegram"]
+    approval_required_levels: list[str] = ["high", "critical"]
+    risk_rules_path: str = "skills/risk_rules.json"
+    risk_sandbox_dry_run: bool = False
     require_approval: bool = True
 
     # --- Skills ---
@@ -55,6 +94,11 @@ class CueConfig(BaseSettings):
     # --- Autonomous Loop ---
     loop_enabled: bool = False
     loop_interval_seconds: int = 30
+    task_queue_enabled: bool = True
+    task_queue_max_list: int = 20
+    task_queue_retry_failed_attempts: int = 2
+    task_queue_auto_subtasks_enabled: bool = True
+    task_queue_auto_subtasks_max: int = 3
 
     # --- Healthcheck endpoint ---
     healthcheck_enabled: bool = True

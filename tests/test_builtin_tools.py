@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import logging
 
+import cue_agent.actions.builtin_tools as builtin_tools
 from cue_agent.actions.builtin_tools import read_file, run_shell, send_telegram, web_search, write_file
 
 
@@ -64,11 +65,116 @@ def test_send_telegram_retries_on_429_then_succeeds(monkeypatch):
         loop.close()
 
 
-def test_web_search_placeholder():
-    result = web_search("cue agent")
-    assert result["query"] == "cue agent"
-    assert result["results"] == []
-    assert "not yet configured" in result["note"].lower()
+def test_web_search_rejects_empty_query():
+    result = web_search("   ")
+    assert result["error"] == "Query must not be empty"
+
+
+def test_web_search_tavily_success(monkeypatch):
+    monkeypatch.setenv("CUE_TAVILY_API_KEY", "tv-test")
+    monkeypatch.setenv("CUE_SEARCH_PROVIDER", "auto")
+    monkeypatch.setattr("cue_agent.actions.builtin_tools._apply_search_rate_limit", lambda: None)
+
+    def _fake_request(**kwargs):  # noqa: ANN003
+        assert kwargs["url"] == "https://api.tavily.com/search"
+        return {
+            "results": [
+                {"title": "Cue Agent docs", "url": "https://example.com/cue", "content": "Cue Agent setup"},
+                {"title": "Cue Agent blog", "url": "https://example.com/blog", "content": "Cue Agent roadmap"},
+            ]
+        }
+
+    monkeypatch.setattr("cue_agent.actions.builtin_tools._search_request_json", _fake_request)
+
+    result = web_search("cue agent", max_results=2, include_content=True)
+    assert result["provider_used"] == "tavily"
+    assert result["providers_attempted"] == ["tavily"]
+    assert len(result["results"]) == 2
+    assert "content" in result["results"][0]
+
+
+def test_web_search_fallbacks_to_serpapi(monkeypatch):
+    monkeypatch.setenv("CUE_TAVILY_API_KEY", "tv-test")
+    monkeypatch.setenv("CUE_SERPAPI_API_KEY", "sp-test")
+    monkeypatch.setenv("CUE_SEARCH_PROVIDER", "auto")
+    monkeypatch.setattr("cue_agent.actions.builtin_tools._apply_search_rate_limit", lambda: None)
+
+    def _fake_request(**kwargs):  # noqa: ANN003
+        if kwargs["url"] == "https://api.tavily.com/search":
+            raise RuntimeError("tavily down")
+        assert kwargs["url"] == "https://serpapi.com/search.json"
+        return {
+            "organic_results": [
+                {"title": "Cue Agent", "link": "https://example.org/cue", "snippet": "search result"},
+            ]
+        }
+
+    monkeypatch.setattr("cue_agent.actions.builtin_tools._search_request_json", _fake_request)
+
+    result = web_search("cue", max_results=3)
+    assert result["provider_used"] == "serpapi"
+    assert result["providers_attempted"] == ["tavily", "serpapi"]
+    assert result["errors"]["tavily"] == "tavily down"
+    assert result["results"][0]["url"] == "https://example.org/cue"
+
+
+def test_web_search_fallbacks_to_duckduckgo(monkeypatch):
+    monkeypatch.delenv("CUE_TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("CUE_SERPAPI_API_KEY", raising=False)
+    monkeypatch.setenv("CUE_SEARCH_PROVIDER", "auto")
+    monkeypatch.setattr("cue_agent.actions.builtin_tools._apply_search_rate_limit", lambda: None)
+
+    def _fake_request(**kwargs):  # noqa: ANN003
+        assert kwargs["url"] == "https://api.duckduckgo.com/"
+        return {
+            "AbstractURL": "https://example.net/overview",
+            "AbstractText": "Cue Agent overview",
+            "Heading": "Cue Agent",
+            "RelatedTopics": [
+                {"Text": "Cue Agent docs - docs", "FirstURL": "https://example.net/docs"},
+            ],
+        }
+
+    monkeypatch.setattr("cue_agent.actions.builtin_tools._search_request_json", _fake_request)
+
+    result = web_search("cue agent", max_results=2)
+    assert result["provider_used"] == "duckduckgo"
+    assert result["providers_attempted"] == ["tavily", "serpapi", "duckduckgo"]
+    assert len(result["results"]) == 2
+    assert result["results"][0]["provider"] == "duckduckgo"
+
+
+def test_web_search_dedupes_normalized_urls(monkeypatch):
+    monkeypatch.setenv("CUE_SEARCH_PROVIDER", "duckduckgo")
+    monkeypatch.setattr("cue_agent.actions.builtin_tools._apply_search_rate_limit", lambda: None)
+
+    def _fake_request(**kwargs):  # noqa: ANN003
+        assert kwargs["url"] == "https://api.duckduckgo.com/"
+        return {
+            "RelatedTopics": [
+                {"Text": "Cue Agent docs - main", "FirstURL": "https://example.io/docs"},
+                {"Text": "Cue Agent docs copy - alt", "FirstURL": "https://example.io/docs/"},
+            ]
+        }
+
+    monkeypatch.setattr("cue_agent.actions.builtin_tools._search_request_json", _fake_request)
+
+    result = web_search("cue docs", max_results=5)
+    assert len(result["results"]) == 1
+    assert result["results"][0]["url"] in {"https://example.io/docs", "https://example.io/docs/"}
+
+
+def test_search_rate_limit_waits(monkeypatch):
+    monkeypatch.setenv("CUE_SEARCH_RATE_LIMIT_SECONDS", "1.0")
+    monkeypatch.setattr(builtin_tools, "_SEARCH_LAST_CALL_AT", 0.0)
+
+    calls: list[float] = []
+    mono = iter([0.2, 1.1])
+    monkeypatch.setattr("cue_agent.actions.builtin_tools.time.monotonic", lambda: next(mono))
+    monkeypatch.setattr("cue_agent.actions.builtin_tools.time.sleep", lambda sec: calls.append(sec))
+
+    builtin_tools._apply_search_rate_limit()
+    assert calls == [0.8]
 
 
 def test_read_file_success(tmp_path: Path):

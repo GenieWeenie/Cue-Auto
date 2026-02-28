@@ -19,6 +19,24 @@ WEB_SEARCH_SCHEMA = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Search query"},
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum results to return (defaults to configured value)",
+                "minimum": 1,
+                "maximum": 20,
+            },
+            "region": {
+                "type": "string",
+                "description": "Search locale/region hint (example: us-en)",
+            },
+            "provider": {
+                "type": "string",
+                "description": "Provider override: auto, tavily, serpapi, duckduckgo, or comma-separated chain",
+            },
+            "include_content": {
+                "type": "boolean",
+                "description": "Include extracted content when provider supports it",
+            },
         },
         "required": ["query"],
         "additionalProperties": False,

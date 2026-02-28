@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/your-username/Cue-Auto/actions/workflows/ci.yml/badge.svg)](https://github.com/your-username/Cue-Auto/actions/workflows/ci.yml)
 
-Autonomous AI agent built on the [Efficient Agent Protocol (EAP)](https://github.com/GenieWeenie/efficient-agent-protocol). CueAgent combines a cascading multi-provider LLM brain, Telegram interface, hot-reloadable skills, and a Ralph-style autonomous loop into a single cohesive system.
+Autonomous AI agent built on the [Efficient Agent Protocol (EAP)](https://github.com/GenieWeenie/efficient-agent-protocol). CueAgent combines a cascading multi-provider LLM brain, Telegram interface, hot-reloadable skills, optional long-term vector memory, and a Ralph-style autonomous loop into a single cohesive system.
 
 ## Architecture
 
@@ -47,21 +47,25 @@ CueAgent is organized into 6 blocks, all wired together by the `CueApp` orchestr
 ### Memory
 
 - **SessionMemory** — Wraps EAP's `StateManager` conversation API. Maintains per-chat sliding-window context (last 20 turns by default).
+- **VectorMemory** — Optional ChromaDB-backed semantic recall for long-term memory across turns and loop outcomes.
+- **Consolidation policy** — Periodic summarization/compaction keeps recent raw entries while rolling older entries into durable summary memories.
 
 ### Actions
 
 - **ActionRegistry** — Wraps EAP's `ToolRegistry`. Registers 5 built-in tools plus any loaded skills.
 - **Built-in tools**: `send_telegram`, `web_search`, `read_file`, `write_file`, `run_shell`
+- **Web search tool**: provider-backed search with fallback chain `tavily -> serpapi -> duckduckgo`, plus deduped relevance ranking.
 
 ### Security
 
-- **RiskClassifier** — Classifies tool calls as high or low risk based on a configurable list.
+- **RiskClassifier** — Context-aware risk engine with `low|medium|high|critical` levels using tool args, intent, and execution context.
+- **Risk rules file** — JSON policy file (`skills/risk_rules.json` by default) with custom shell/path risk patterns and approval levels.
 - **ApprovalGate** — Bridges EAP's HITL (human-in-the-loop) checkpoints to Telegram approval buttons.
 
 ### Heartbeat
 
 - **Scheduler** — APScheduler async cron for recurring tasks.
-- **Tasks** — Daily summary (sent to admin via Telegram) and periodic health checks.
+- **Tasks** — Daily summary (tasks/tools/costs/health/errors), periodic health checks, and notification digests.
 
 ### Ralph Loop
 
@@ -95,7 +99,8 @@ Cue-Auto/
 │   │   ├── normalizer.py
 │   │   └── models.py          # UnifiedMessage, UnifiedResponse
 │   ├── memory/
-│   │   └── session_memory.py  # EAP StateManager wrapper
+│   │   ├── session_memory.py  # EAP StateManager wrapper
+│   │   └── vector_memory.py   # Optional ChromaDB semantic memory
 │   ├── actions/
 │   │   ├── registry.py        # EAP ToolRegistry wrapper + skills
 │   │   ├── builtin_tools.py   # 5 built-in tool implementations
@@ -150,6 +155,9 @@ source .venv/bin/activate
 
 # Install with dev dependencies
 pip install -e ".[dev]"
+
+# Optional: install vector memory backend
+pip install -e ".[dev,vector]"
 ```
 
 ### Configuration
@@ -171,6 +179,9 @@ CUE_TELEGRAM_ADMIN_CHAT_ID=123456789
 ```
 
 All configuration uses the `CUE_` prefix. See `.env.example` for the full list of options.
+Set `CUE_VECTOR_MEMORY_ENABLED=true` after installing the `vector` extra to enable semantic recall.
+Consolidation is controlled by `CUE_VECTOR_MEMORY_CONSOLIDATION_*` settings and runs on cron when heartbeat is enabled.
+Web search behavior is controlled by `CUE_SEARCH_*` settings and provider keys (`CUE_TAVILY_API_KEY`, `CUE_SERPAPI_API_KEY`).
 
 ### Verify Setup
 
@@ -221,6 +232,32 @@ The Ralph loop runs autonomously — picking tasks, planning, executing, and ver
 ### Both Together
 
 Set `CUE_LOOP_ENABLED=true` in `.env` and run in polling mode. The Telegram interface and autonomous loop run concurrently — you can chat with the agent while it works autonomously in the background.
+
+### Task Queue Commands (Telegram)
+
+Use these in Telegram chat to manage persistent queued work:
+
+- `/usage` — show monthly provider usage, estimated spend, and budget thresholds
+- `/tasks` — list queued tasks
+- `/tasks pending|blocked|in_progress|failed|done|all`
+- `/task add [p1|p2|p3|p4] <title>`
+- `/task sub <parent_id> [p1|p2|p3|p4] <title>`
+- `/task done <task_id>`
+- `/task depend <task_id> <depends_on_task_id>`
+- `/task retry <task_id>`
+
+### Notification Delivery
+
+Operational notifications are sent to the Telegram admin chat for:
+- task completion/failure
+- high-risk actions requiring approval
+- provider outages
+- budget warnings and hard-stop events
+
+Delivery behavior is configurable:
+- `immediate` — send events as they happen (quiet-hours respected for non-critical alerts)
+- `hourly` — batch into hourly digest messages
+- `daily` — batch into daily digest messages
 
 ## Skills
 
@@ -284,7 +321,7 @@ When `CUE_SKILLS_HOT_RELOAD=true` (default), a background watcher polls the skil
 
 ## LLM Provider Cascade
 
-CueAgent tries providers in order, falling back on failure:
+CueAgent classifies requests as simple vs complex and chooses provider order accordingly:
 
 | Priority | Provider | Config Key | Notes |
 |----------|----------|------------|-------|
@@ -293,7 +330,14 @@ CueAgent tries providers in order, falling back on failure:
 | 3 | OpenRouter | `CUE_OPENROUTER_API_KEY` | Aggregator, any model |
 | 4 | LM Studio | `CUE_LMSTUDIO_BASE_URL` | Local, always available |
 
-Only providers with configured API keys (or reachable URLs for LM Studio) are added to the cascade. If all providers fail, the last error is raised.
+Routing behavior:
+- Simple prompts prioritize cheaper/faster providers (LM Studio/OpenRouter first).
+- Complex prompts prioritize stronger models (OpenAI/Anthropic first).
+- Router records per-provider request/token/latency/cost metrics.
+- Monthly budget warning and hard-stop thresholds are enforced via `CUE_LLM_BUDGET_*`.
+- Use `/usage` in Telegram to see spend by provider.
+
+Only providers with configured API keys (or reachable URLs for LM Studio) are added to the cascade. If all providers fail, or all remote providers are budget-blocked, an outage error is raised.
 
 ## Testing
 
@@ -321,18 +365,45 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 | `CUE_LMSTUDIO_MODEL` | `local-model` | LM Studio model name |
 | `CUE_LLM_TEMPERATURE` | `0.0` | LLM temperature |
 | `CUE_LLM_TIMEOUT_SECONDS` | `60` | LLM request timeout |
+| `CUE_LLM_BUDGET_WARNING_USD` | `20.0` | Monthly estimated spend warning threshold |
+| `CUE_LLM_MONTHLY_BUDGET_USD` | `50.0` | Monthly estimated spend hard-stop threshold |
+| `CUE_LLM_BUDGET_ENFORCE_HARD_STOP` | `true` | Skip remote providers when budget hard-stop is exceeded |
+| `CUE_LLM_COST_OPENAI_INPUT_PER_1K` | `0.005` | Estimated OpenAI input token cost (USD per 1k) |
+| `CUE_LLM_COST_OPENAI_OUTPUT_PER_1K` | `0.015` | Estimated OpenAI output token cost (USD per 1k) |
+| `CUE_LLM_COST_ANTHROPIC_INPUT_PER_1K` | `0.003` | Estimated Anthropic input token cost (USD per 1k) |
+| `CUE_LLM_COST_ANTHROPIC_OUTPUT_PER_1K` | `0.015` | Estimated Anthropic output token cost (USD per 1k) |
+| `CUE_LLM_COST_OPENROUTER_INPUT_PER_1K` | `0.003` | Estimated OpenRouter input token cost (USD per 1k) |
+| `CUE_LLM_COST_OPENROUTER_OUTPUT_PER_1K` | `0.010` | Estimated OpenRouter output token cost (USD per 1k) |
+| `CUE_LLM_COST_LMSTUDIO_INPUT_PER_1K` | `0.0` | Estimated LM Studio input token cost (USD per 1k) |
+| `CUE_LLM_COST_LMSTUDIO_OUTPUT_PER_1K` | `0.0` | Estimated LM Studio output token cost (USD per 1k) |
 | `CUE_TELEGRAM_BOT_TOKEN` | `""` | Telegram bot token |
 | `CUE_TELEGRAM_ADMIN_CHAT_ID` | `0` | Admin chat ID for approvals |
+| `CUE_NOTIFICATIONS_ENABLED` | `true` | Enable operational Telegram notifications |
+| `CUE_NOTIFICATION_DELIVERY_MODE` | `immediate` | Notification delivery mode: `immediate`, `hourly`, or `daily` |
+| `CUE_NOTIFICATION_PRIORITY_THRESHOLD` | `medium` | Minimum notification priority to send |
+| `CUE_NOTIFICATION_QUIET_HOURS_START` | `22` | Quiet-hours start hour (0-23) in notification timezone |
+| `CUE_NOTIFICATION_QUIET_HOURS_END` | `7` | Quiet-hours end hour (0-23) in notification timezone |
+| `CUE_NOTIFICATION_TIMEZONE` | `UTC` | IANA timezone for quiet-hours evaluation |
+| `CUE_NOTIFICATION_HOURLY_DIGEST_CRON` | `0 * * * *` | Cron schedule for hourly/catch-up notification digest |
+| `CUE_NOTIFICATION_DAILY_DIGEST_CRON` | `0 8 * * *` | Cron schedule for daily notification digest |
 | `CUE_STATE_DB_PATH` | `cue_state.db` | SQLite state database path |
 | `CUE_SOUL_MD_PATH` | `SOUL.md` | Agent identity file path |
 | `CUE_SKILLS_DIR` | `skills` | Skills directory path |
 | `CUE_SKILLS_HOT_RELOAD` | `true` | Enable skill hot-reloading |
 | `CUE_HIGH_RISK_TOOLS` | `["run_shell","write_file","send_telegram"]` | Tools requiring approval |
+| `CUE_APPROVAL_REQUIRED_LEVELS` | `["high","critical"]` | Risk levels that trigger mandatory approval |
+| `CUE_RISK_RULES_PATH` | `skills/risk_rules.json` | Path to JSON risk policy rules file |
+| `CUE_RISK_SANDBOX_DRY_RUN` | `false` | Auto-deny non-low-risk approvals for safe policy testing |
 | `CUE_REQUIRE_APPROVAL` | `true` | Enable HITL approval gates |
 | `CUE_HEARTBEAT_ENABLED` | `false` | Enable scheduled tasks |
 | `CUE_DAILY_SUMMARY_CRON` | `0 8 * * *` | Cron for daily summary |
 | `CUE_LOOP_ENABLED` | `false` | Enable autonomous loop alongside Telegram |
 | `CUE_LOOP_INTERVAL_SECONDS` | `30` | Seconds between loop iterations |
+| `CUE_TASK_QUEUE_ENABLED` | `true` | Enable persistent SQLite task queue scheduling |
+| `CUE_TASK_QUEUE_MAX_LIST` | `20` | Max tasks returned by `/tasks` |
+| `CUE_TASK_QUEUE_RETRY_FAILED_ATTEMPTS` | `2` | Retry attempts before marking task failed |
+| `CUE_TASK_QUEUE_AUTO_SUBTASKS_ENABLED` | `true` | Allow loop agent to generate sub-tasks |
+| `CUE_TASK_QUEUE_AUTO_SUBTASKS_MAX` | `3` | Max auto-generated sub-tasks per parent task |
 | `CUE_HEALTHCHECK_ENABLED` | `true` | Enable `/healthz` endpoint for probes |
 | `CUE_HEALTHCHECK_HOST` | `0.0.0.0` | Health endpoint bind host |
 | `CUE_HEALTHCHECK_PORT` | `8080` | Health endpoint bind port |

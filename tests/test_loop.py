@@ -63,6 +63,60 @@ class _FakeApprovalGate:
         return macro
 
 
+class _FakeVectorMemory:
+    def __init__(self):
+        self.recalls: list[dict] = []
+        self.added_turns: list[dict] = []
+
+    def recall_as_context(self, chat_id: str, query: str, limit: int | None = None) -> str:
+        self.recalls.append({"chat_id": chat_id, "query": query, "limit": limit})
+        return "Long-term semantic memory:\n- prior loop outcome"
+
+    def add_turn(self, chat_id: str, role: str, content: str, run_id: str | None = None) -> None:
+        self.added_turns.append({"chat_id": chat_id, "role": role, "content": content, "run_id": run_id})
+
+
+class _FakeTaskQueue:
+    def __init__(self):
+        self._next_task: dict | None = None
+        self.marked_in_progress: list[int] = []
+        self.marked_done: list[int] = []
+        self.marked_failed: list[dict] = []
+        self.created_subtasks: list[dict] = []
+
+    def next_unblocked_task(self):
+        return self._next_task
+
+    def list_tasks(self, status: str | None = None, limit: int = 20):  # noqa: ARG002
+        if self._next_task is None:
+            return []
+        return [self._next_task]
+
+    def mark_in_progress(self, task_id: int) -> None:
+        self.marked_in_progress.append(task_id)
+
+    def mark_done(self, task_id: int) -> None:
+        self.marked_done.append(task_id)
+
+    def mark_failed(self, task_id: int, error: str, retry_limit: int) -> str:
+        self.marked_failed.append({"task_id": task_id, "error": error, "retry_limit": retry_limit})
+        return "failed"
+
+    def child_count(self, parent_task_id: int) -> int:  # noqa: ARG002
+        return 0
+
+    def create_subtask(self, parent_task_id: int, title: str, priority: int, source: str):  # noqa: ARG002
+        self.created_subtasks.append(
+            {
+                "parent_task_id": parent_task_id,
+                "title": title,
+                "priority": priority,
+                "source": source,
+            }
+        )
+        return 100
+
+
 def test_task_picker_returns_none_on_nothing():
     picker = TaskPicker(_FakeBrain(["NOTHING"]))
     assert picker.pick("status context") is None
@@ -80,11 +134,13 @@ def test_verifier_parses_success_and_failure():
 async def test_ralph_loop_iteration_executes_task():
     brain = _FakeBrain(["Run backup", "SUCCESS - backup complete"])
     memory = _FakeMemory()
+    vector_memory = _FakeVectorMemory()
     actions = _FakeActions()
     executor = _FakeExecutor()
     loop = RalphLoop(
         brain=brain,
         memory=memory,
+        vector_memory=vector_memory,
         actions=actions,
         executor=executor,
         state_manager=object(),
@@ -95,8 +151,11 @@ async def test_ralph_loop_iteration_executes_task():
     await loop.run_once()
 
     assert len(brain.plan_calls) == 1
+    assert "Long-term semantic memory" in brain.plan_calls[0]["memory_context"]
+    assert len(vector_memory.recalls) == 1
     assert len(executor.calls) == 1
     assert len(memory.added_turns) == 1
+    assert len(vector_memory.added_turns) == 1
     assert memory.added_turns[0]["chat_id"] == LOOP_CHAT_ID
     assert "Run backup" in memory.added_turns[0]["content"]
     assert loop.last_iteration_time is not None
@@ -152,3 +211,101 @@ async def test_ralph_loop_retries_macro_execution():
 
     assert executor.failures_remaining == 0
     assert len(executor.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_ralph_loop_uses_task_queue_and_marks_done():
+    brain = _FakeBrain(["SUCCESS - backup complete"])
+    memory = _FakeMemory()
+    actions = _FakeActions()
+    executor = _FakeExecutor()
+    task_queue = _FakeTaskQueue()
+    task_queue._next_task = {
+        "id": 7,
+        "title": "Queue backup",
+        "description": "Nightly archive",
+        "priority": 1,
+    }
+    loop = RalphLoop(
+        brain=brain,
+        memory=memory,
+        actions=actions,
+        executor=executor,
+        state_manager=object(),
+        approval_gate=_FakeApprovalGate(),
+        config=CueConfig(task_queue_enabled=True, task_queue_auto_subtasks_enabled=False),
+        task_queue=task_queue,
+    )
+
+    await loop.run_once()
+
+    assert task_queue.marked_in_progress == [7]
+    assert task_queue.marked_done == [7]
+    assert task_queue.marked_failed == []
+    assert brain.plan_calls[0]["task"].startswith("Queue backup")
+
+
+@pytest.mark.asyncio
+async def test_ralph_loop_emits_task_notifications():
+    brain = _FakeBrain(["SUCCESS - completed"])
+    memory = _FakeMemory()
+    actions = _FakeActions()
+    executor = _FakeExecutor()
+    task_queue = _FakeTaskQueue()
+    task_queue._next_task = {
+        "id": 11,
+        "title": "Queue operation",
+        "description": "",
+        "priority": 2,
+    }
+    events: list[dict] = []
+    loop = RalphLoop(
+        brain=brain,
+        memory=memory,
+        actions=actions,
+        executor=executor,
+        state_manager=object(),
+        approval_gate=_FakeApprovalGate(),
+        config=CueConfig(task_queue_enabled=True, task_queue_auto_subtasks_enabled=False),
+        task_queue=task_queue,
+        notification_handler=lambda event: events.append(event),
+    )
+
+    await loop.run_once()
+
+    assert len(events) == 1
+    assert events[0]["event"] == "task_completion"
+    assert events[0]["priority"] == "medium"
+
+
+@pytest.mark.asyncio
+async def test_ralph_loop_creates_agent_subtasks_from_queue_item():
+    brain = _FakeBrain(["- Collect logs\n- Validate backups", "SUCCESS - done"])
+    memory = _FakeMemory()
+    actions = _FakeActions()
+    executor = _FakeExecutor()
+    task_queue = _FakeTaskQueue()
+    task_queue._next_task = {
+        "id": 9,
+        "title": "Investigate nightly backup issue",
+        "description": "",
+        "priority": 2,
+    }
+    loop = RalphLoop(
+        brain=brain,
+        memory=memory,
+        actions=actions,
+        executor=executor,
+        state_manager=object(),
+        approval_gate=_FakeApprovalGate(),
+        config=CueConfig(
+            task_queue_enabled=True, task_queue_auto_subtasks_enabled=True, task_queue_auto_subtasks_max=3
+        ),
+        task_queue=task_queue,
+    )
+
+    await loop.run_once()
+
+    assert len(task_queue.created_subtasks) == 2
+    assert task_queue.created_subtasks[0]["parent_task_id"] == 9
+    assert task_queue.created_subtasks[0]["source"] == "agent_autosubtask"

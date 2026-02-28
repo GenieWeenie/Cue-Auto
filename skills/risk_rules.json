@@ -1,0 +1,13 @@
+{
+  "approval_required_levels": ["high", "critical"],
+  "run_shell": {
+    "critical_patterns": ["rm -rf /", "mkfs", "shutdown", "reboot", "dd if="],
+    "high_patterns": ["sudo ", "systemctl ", "git reset --hard", "docker "],
+    "medium_patterns": ["pip install", "npm install", "git "]
+  },
+  "write_file": {
+    "critical_path_tokens": ["/etc/", "/usr/bin/", ".ssh", ".env"],
+    "high_path_tokens": ["/var/", "/usr/local/", ".bashrc", ".zshrc"],
+    "medium_extensions": [".sh", ".zsh", ".bash", ".ps1", ".service", ".yaml", ".yml"]
+  }
+}

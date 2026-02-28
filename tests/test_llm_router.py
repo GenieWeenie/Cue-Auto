@@ -11,16 +11,20 @@ from cue_agent.config import CueConfig
 
 
 class _FakeProvider:
-    def __init__(self, name: str, fail_complete: bool = False):
+    def __init__(self, name: str, fail_complete: bool = False, usage: dict[str, int] | None = None):
         self.name = name
         self.fail_complete = fail_complete
+        self.usage = usage or {}
         self.last_model: str | None = None
+        self.calls = 0
 
     def complete(self, request: CompletionRequest) -> CompletionResponse:
+        self.calls += 1
         self.last_model = request.model
         if self.fail_complete:
             raise RuntimeError(f"{self.name} unavailable")
-        return CompletionResponse(text=f"ok:{self.name}")
+        payload = {"usage": self.usage} if self.usage else {}
+        return CompletionResponse(text=f"ok:{self.name}", raw_response=payload)
 
     def complete_with_tools(self, request: CompletionRequest) -> CompletionResponse:
         return self.complete(request)
@@ -36,6 +40,14 @@ def _request() -> CompletionRequest:
     return CompletionRequest(
         model="ignored",
         messages=[ProviderMessage(role="user", content="hello")],
+        temperature=0.0,
+    )
+
+
+def _complex_request() -> CompletionRequest:
+    return CompletionRequest(
+        model="ignored",
+        messages=[ProviderMessage(role="user", content="Analyze architecture tradeoffs for this multi-step task.")],
         temperature=0.0,
     )
 
@@ -70,7 +82,7 @@ def test_llm_router_falls_back_to_anthropic(monkeypatch):
     )
     router = LLMRouter(config)
 
-    response = router.complete(_request())
+    response = router.complete(_complex_request())
     assert response.text == "ok:anthropic"
     assert providers["openai"].last_model == config.openai_model
     assert providers["anthropic"].last_model == config.anthropic_model
@@ -169,7 +181,7 @@ def test_llm_router_logs_call_metrics(monkeypatch, caplog):
     )
 
     with caplog.at_level(logging.INFO):
-        _ = router.complete(_request())
+        _ = router.complete(_complex_request())
 
     record = next(r for r in caplog.records if getattr(r, "event", "") == "llm_call")
     assert record.provider == "openai"
@@ -183,10 +195,8 @@ def test_llm_router_circuit_breaker_skips_open_provider(monkeypatch):
     class _AlwaysFailProvider(_FakeProvider):
         def __init__(self):
             super().__init__("openai", fail_complete=True)
-            self.calls = 0
 
         def complete(self, request: CompletionRequest) -> CompletionResponse:
-            self.calls += 1
             return super().complete(request)
 
     failing = _AlwaysFailProvider()
@@ -212,11 +222,183 @@ def test_llm_router_circuit_breaker_skips_open_provider(monkeypatch):
     router = LLMRouter(config)
 
     # First call fails on openai and falls back to lmstudio; openai circuit opens.
-    first = router.complete(_request())
+    first = router.complete(_complex_request())
     assert first.text == "ok:lmstudio"
     assert failing.calls == 1
 
     # Second call should skip openai while circuit is open.
-    second = router.complete(_request())
+    second = router.complete(_complex_request())
     assert second.text == "ok:lmstudio"
     assert failing.calls == 1
+
+
+def test_llm_router_routes_simple_requests_to_cheaper_provider(monkeypatch):
+    openai = _FakeProvider("openai")
+    lmstudio = _FakeProvider("lmstudio")
+
+    def fake_create_provider(provider_name: str, base_url: str, api_key: str, timeout_seconds: int):  # noqa: ARG001
+        if provider_name == "openai":
+            return openai
+        return lmstudio
+
+    monkeypatch.setattr("cue_agent.brain.llm_router.create_provider", fake_create_provider)
+
+    router = LLMRouter(
+        CueConfig(
+            openai_api_key="sk-test",
+            lmstudio_base_url="http://localhost:1234",
+            retry_base_delay_seconds=0.0,
+            retry_max_delay_seconds=0.0,
+            retry_jitter_seconds=0.0,
+        )
+    )
+
+    response = router.complete(_request())
+    assert response.text == "ok:lmstudio"
+    assert lmstudio.calls == 1
+    assert openai.calls == 0
+
+
+def test_llm_router_routes_complex_requests_to_strong_provider(monkeypatch):
+    openai = _FakeProvider("openai")
+    lmstudio = _FakeProvider("lmstudio")
+
+    def fake_create_provider(provider_name: str, base_url: str, api_key: str, timeout_seconds: int):  # noqa: ARG001
+        if provider_name == "openai":
+            return openai
+        return lmstudio
+
+    monkeypatch.setattr("cue_agent.brain.llm_router.create_provider", fake_create_provider)
+
+    router = LLMRouter(
+        CueConfig(
+            openai_api_key="sk-test",
+            lmstudio_base_url="http://localhost:1234",
+            retry_base_delay_seconds=0.0,
+            retry_max_delay_seconds=0.0,
+            retry_jitter_seconds=0.0,
+        )
+    )
+    request = CompletionRequest(
+        model="ignored",
+        messages=[ProviderMessage(role="user", content="Analyze architecture tradeoffs for this multi-step design.")],
+        temperature=0.0,
+    )
+
+    response = router.complete(request)
+    assert response.text == "ok:openai"
+    assert openai.calls == 1
+    assert lmstudio.calls == 0
+
+
+def test_llm_router_usage_summary_tracks_estimated_cost(monkeypatch):
+    openai = _FakeProvider("openai", usage={"prompt_tokens": 1000, "completion_tokens": 500})
+    lmstudio = _FakeProvider("lmstudio")
+
+    def fake_create_provider(provider_name: str, base_url: str, api_key: str, timeout_seconds: int):  # noqa: ARG001
+        if provider_name == "openai":
+            return openai
+        return lmstudio
+
+    monkeypatch.setattr("cue_agent.brain.llm_router.create_provider", fake_create_provider)
+    router = LLMRouter(
+        CueConfig(
+            openai_api_key="sk-test",
+            lmstudio_base_url="http://localhost:1234",
+            retry_base_delay_seconds=0.0,
+            retry_max_delay_seconds=0.0,
+            retry_jitter_seconds=0.0,
+        )
+    )
+    request = CompletionRequest(
+        model="ignored",
+        messages=[ProviderMessage(role="user", content="Analyze this design deeply with tradeoffs.")],
+        temperature=0.0,
+    )
+
+    _ = router.complete(request)
+    summary = router.usage_summary()
+    providers = summary["providers"]
+    assert isinstance(providers, dict)
+    openai_usage = providers["openai"]
+    assert openai_usage["requests"] == 1
+    assert openai_usage["tokens_in"] == 1000
+    assert openai_usage["tokens_out"] == 500
+    assert openai_usage["estimated_cost_usd"] > 0.0
+    text = router.usage_report_text()
+    assert "Total estimated spend" in text
+    assert "- openai:" in text
+
+
+def test_llm_router_budget_hard_stop_skips_remote_provider(monkeypatch):
+    openai = _FakeProvider("openai", usage={"prompt_tokens": 500, "completion_tokens": 500})
+    lmstudio = _FakeProvider("lmstudio")
+
+    def fake_create_provider(provider_name: str, base_url: str, api_key: str, timeout_seconds: int):  # noqa: ARG001
+        if provider_name == "openai":
+            return openai
+        return lmstudio
+
+    monkeypatch.setattr("cue_agent.brain.llm_router.create_provider", fake_create_provider)
+    router = LLMRouter(
+        CueConfig(
+            openai_api_key="sk-test",
+            lmstudio_base_url="http://localhost:1234",
+            llm_budget_warning_usd=0.0,
+            llm_monthly_budget_usd=0.001,
+            llm_budget_enforce_hard_stop=True,
+            retry_base_delay_seconds=0.0,
+            retry_max_delay_seconds=0.0,
+            retry_jitter_seconds=0.0,
+        )
+    )
+    request = CompletionRequest(
+        model="ignored",
+        messages=[ProviderMessage(role="user", content="Analyze architecture deeply and compare designs.")],
+        temperature=0.0,
+    )
+
+    first = router.complete(request)
+    assert first.text == "ok:openai"
+
+    second = router.complete(request)
+    assert second.text == "ok:lmstudio"
+    assert openai.calls == 1
+
+
+def test_llm_router_emits_budget_events(monkeypatch):
+    openai = _FakeProvider("openai", usage={"prompt_tokens": 1000, "completion_tokens": 1000})
+    lmstudio = _FakeProvider("lmstudio")
+
+    def fake_create_provider(provider_name: str, base_url: str, api_key: str, timeout_seconds: int):  # noqa: ARG001
+        if provider_name == "openai":
+            return openai
+        return lmstudio
+
+    monkeypatch.setattr("cue_agent.brain.llm_router.create_provider", fake_create_provider)
+    events: list[dict] = []
+    router = LLMRouter(
+        CueConfig(
+            openai_api_key="sk-test",
+            lmstudio_base_url="http://localhost:1234",
+            llm_budget_warning_usd=0.001,
+            llm_monthly_budget_usd=0.002,
+            llm_budget_enforce_hard_stop=True,
+            retry_base_delay_seconds=0.0,
+            retry_max_delay_seconds=0.0,
+            retry_jitter_seconds=0.0,
+        ),
+        event_handler=lambda event: events.append(event),
+    )
+    request = CompletionRequest(
+        model="ignored",
+        messages=[ProviderMessage(role="user", content="Analyze architecture deeply and compare designs.")],
+        temperature=0.0,
+    )
+
+    _ = router.complete(request)
+    _ = router.complete(request)
+
+    names = [event["event"] for event in events]
+    assert "llm_budget_warning" in names
+    assert "llm_budget_hard_stop" in names

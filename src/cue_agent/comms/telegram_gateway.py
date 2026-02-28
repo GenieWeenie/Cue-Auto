@@ -39,6 +39,8 @@ class TelegramGateway:
 
         self.app = Application.builder().token(config.telegram_bot_token).build()
         self.app.add_handler(CommandHandler("start", self._handle_start))
+        self.app.add_handler(CommandHandler("task", self._handle_command_message))
+        self.app.add_handler(CommandHandler("tasks", self._handle_command_message))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
 
@@ -70,6 +72,9 @@ class TelegramGateway:
             )
             response = await self.on_message(unified)
             await update.message.reply_text(response.text, parse_mode=response.parse_mode)
+
+    async def _handle_command_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._handle_message(update, context)
 
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del context
