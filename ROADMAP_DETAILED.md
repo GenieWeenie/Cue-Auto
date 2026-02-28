@@ -6,18 +6,18 @@ Use this list to track fixes and improvements. Items are mirrored as issues in t
 
 ## Quick wins
 
-- [ ] **Remove tracked `nul`** — If `nul` is tracked: `git rm --cached nul` and commit. (Already in `.gitignore`.)
+- [x] **Remove tracked `nul`** — If `nul` is tracked: `git rm --cached nul` and commit. (Already in `.gitignore`.)
 - [ ] **Verify CI** — After pushing: confirm GitHub Actions pass and the README badge shows GenieWeenie/Cue-Auto and correct status.
-- [ ] **README project tree** — Add a short note or extra lines for `orchestration/`, `audit/`, `notifications/`, and top-level helpers (`retry_utils.py`, `config_diagnostics.py`, `logging_utils.py`) so the tree matches the codebase.
+- [x] **README project tree** — Add a short note or extra lines for `orchestration/`, `audit/`, `notifications/`, and top-level helpers (`retry_utils.py`, `config_diagnostics.py`, `logging_utils.py`) so the tree matches the codebase.
 
 ---
 
 ## Documentation
 
-- [ ] **CONTRIBUTING.md** — Add a short guide: how to run tests (`pytest tests/ -v`), Ruff (`ruff check src tests`, `ruff format --check src tests`), mypy (`mypy src/cue_agent`), and branch/PR expectations.
-- [ ] **CHANGELOG.md** — Add a changelog (or a “Releases” section in README) for version history and notable changes.
+- [x] **CONTRIBUTING.md** — Add a short guide: how to run tests (`pytest tests/ -v`), Ruff (`ruff check src tests`, `ruff format --check src tests`), mypy (`mypy src/cue_agent`), and branch/PR expectations.
+- [x] **CHANGELOG.md** — Add a changelog (or a “Releases” section in README) for version history and notable changes.
 - [ ] **Architecture / design doc** — Optional: add a small doc (or expand README) describing orchestration, audit, and notification flows.
-- [ ] **Deployment link** — Ensure README “One-command Docker Deploy” (or equivalent) has a clear one-line link to `docs/deployment.md`.
+- [x] **Deployment link** — Ensure README “One-command Docker Deploy” (or equivalent) has a clear one-line link to `docs/deployment.md`.
 
 ---
 

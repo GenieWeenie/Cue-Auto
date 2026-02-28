@@ -122,9 +122,15 @@ Cue-Auto/
 │   │   ├── engine.py          # Workflow runner (LLM/tool/approval/parallel/condition)
 │   │   ├── manager.py         # Trigger routing + run coordination
 │   │   └── watcher.py         # Filesystem hot-reload watcher
-│   └── skills/
-│       ├── loader.py          # Discovers and loads skills
-│       └── watcher.py         # Filesystem polling for hot-reload
+│   ├── skills/
+│   │   ├── loader.py          # Discovers and loads skills
+│   │   └── watcher.py         # Filesystem polling for hot-reload
+│   ├── orchestration/         # Multi-agent delegation and handoff
+│   ├── audit/                 # Audit trail storage and export
+│   ├── notifications/         # Notification delivery and batching
+│   ├── retry_utils.py         # Retry and circuit-breaker helpers
+│   ├── config_diagnostics.py  # Config validation and --check-config
+│   └── logging_utils.py       # Structured logging setup
 ├── skills/                    # Drop skills here (auto-discovered)
 │   └── example_hello.py
 ├── workflows/
@@ -199,6 +205,8 @@ python -m cue_agent --check-config
 This prints the status of all providers, loaded skills, and feature flags.
 
 ### One-command Docker Deploy
+
+For full production options (Docker, systemd, cloud), see the [deployment guide](docs/deployment.md).
 
 ```bash
 cp .env.production.example .env.production
