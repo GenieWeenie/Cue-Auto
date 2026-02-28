@@ -1,0 +1,28 @@
+services:
+  cue-agent:
+    environment:
+      CUE_RUN_MODE: webhook
+      CUE_TELEGRAM_WEBHOOK_LISTEN_HOST: 0.0.0.0
+      CUE_TELEGRAM_WEBHOOK_LISTEN_PORT: "8081"
+      CUE_TELEGRAM_WEBHOOK_PATH: /telegram/webhook
+    expose:
+      - "8081"
+
+  caddy:
+    image: caddy:2
+    container_name: cue-agent-caddy
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      WEBHOOK_DOMAIN: ${WEBHOOK_DOMAIN:-localhost}
+      WEBHOOK_PATH: ${WEBHOOK_PATH:-/telegram/webhook}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile.webhook:/etc/caddy/Caddyfile:ro
+      - ./data/caddy_data:/data
+      - ./data/caddy_config:/config
+    depends_on:
+      - cue-agent

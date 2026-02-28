@@ -46,6 +46,11 @@ class CueConfig(BaseSettings):
     telegram_bot_token: str = ""
     telegram_admin_chat_id: int = 0
     telegram_webhook_url: str = ""
+    telegram_webhook_listen_host: str = "0.0.0.0"
+    telegram_webhook_listen_port: int = 8081
+    telegram_webhook_path: str = "/telegram/webhook"
+    telegram_webhook_secret_token: str = ""
+    telegram_webhook_drop_pending_updates: bool = False
     notifications_enabled: bool = True
     notification_delivery_mode: str = "immediate"
     notification_priority_threshold: str = "medium"

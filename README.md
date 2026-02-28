@@ -214,6 +214,13 @@ open http://localhost:8080/dashboard
 
 For full production instructions (Docker, systemd, Railway/Fly.io/DigitalOcean), see [`docs/deployment.md`](docs/deployment.md).
 
+Webhook + automatic SSL (Caddy) compose variant:
+
+```bash
+WEBHOOK_DOMAIN=bot.example.com \
+docker compose -f docker-compose.yml -f docker-compose.webhook.yml up -d --build
+```
+
 ## Running
 
 ### Interactive Mode (Telegram Polling)
@@ -223,6 +230,24 @@ python -m cue_agent --mode polling
 ```
 
 Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`, `/audit`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
+
+### Webhook Mode (Telegram HTTPS)
+
+```bash
+cue-agent --mode webhook
+```
+
+Required environment for webhook mode:
+
+```env
+CUE_TELEGRAM_WEBHOOK_URL=https://your-domain.example/telegram/webhook
+CUE_TELEGRAM_WEBHOOK_SECRET_TOKEN=replace-with-random-secret
+CUE_TELEGRAM_WEBHOOK_LISTEN_HOST=0.0.0.0
+CUE_TELEGRAM_WEBHOOK_LISTEN_PORT=8081
+CUE_TELEGRAM_WEBHOOK_PATH=/telegram/webhook
+```
+
+Incoming webhook requests are rejected unless `X-Telegram-Bot-Api-Secret-Token` matches `CUE_TELEGRAM_WEBHOOK_SECRET_TOKEN`.
 
 ### Autonomous Loop
 
@@ -461,6 +486,12 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 | `CUE_DASHBOARD_USERNAME` | `admin` | Basic auth username for dashboard routes |
 | `CUE_DASHBOARD_PASSWORD` | `change-me` | Basic auth password for dashboard routes |
 | `CUE_DASHBOARD_TIMELINE_LIMIT` | `200` | Max in-memory action timeline entries |
+| `CUE_TELEGRAM_WEBHOOK_URL` | `""` | Public HTTPS webhook URL registered with Telegram |
+| `CUE_TELEGRAM_WEBHOOK_LISTEN_HOST` | `0.0.0.0` | Local bind host for webhook listener |
+| `CUE_TELEGRAM_WEBHOOK_LISTEN_PORT` | `8081` | Local bind port for webhook listener |
+| `CUE_TELEGRAM_WEBHOOK_PATH` | `/telegram/webhook` | Local HTTP path accepted for Telegram webhook POSTs |
+| `CUE_TELEGRAM_WEBHOOK_SECRET_TOKEN` | `""` | Required secret token verified against Telegram header |
+| `CUE_TELEGRAM_WEBHOOK_DROP_PENDING_UPDATES` | `false` | Drop pending Telegram updates when setting webhook |
 | `CUE_AUDIT_RETENTION_DAYS` | `30` | Days to keep audit records before cleanup |
 | `CUE_AUDIT_CLEANUP_CRON` | `15 3 * * *` | Daily cron for audit retention cleanup |
 

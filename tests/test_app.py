@@ -52,6 +52,7 @@ def _install_fakes(
         loop_stop=0,
         created_tasks=0,
         telegram_start=0,
+        telegram_webhook_start=0,
         telegram_stop=0,
         raise_reload=False,
     )
@@ -113,6 +114,12 @@ def _install_fakes(
             self.circuit_breaker_failures = 3
             self.circuit_breaker_cooldown_seconds = 5
             self.telegram_bot_token = "token" if has_telegram else ""
+            self.telegram_webhook_url = ""
+            self.telegram_webhook_listen_host = "127.0.0.1"
+            self.telegram_webhook_listen_port = 0
+            self.telegram_webhook_path = "/telegram/webhook"
+            self.telegram_webhook_secret_token = "secret"
+            self.telegram_webhook_drop_pending_updates = False
             self.has_telegram = has_telegram
             self.openai_base_url = "https://api.openai.com"
             self.openai_model = "gpt-4o"
@@ -364,6 +371,17 @@ def _install_fakes(
 
         async def start_polling(self):
             t.telegram_start += 1
+
+        async def start_webhook(self):
+            t.telegram_webhook_start += 1
+
+        def webhook_diagnostics(self):
+            return {
+                "configured_path": "/telegram/webhook",
+                "registered": False,
+                "request_count": 0,
+                "rejected_count": 0,
+            }
 
         async def stop(self):
             t.telegram_stop += 1
@@ -712,6 +730,42 @@ async def test_run_polling_paths(monkeypatch):
 
     await app2._run_polling()
     assert t2.telegram_start == 1
+    assert t2.created_tasks >= 1
+
+
+@pytest.mark.asyncio
+async def test_run_webhook_paths(monkeypatch):
+    t1 = _install_fakes(monkeypatch, has_telegram=False)
+    app1 = app_module.CueApp()
+    await app1._run_webhook()
+    assert t1.telegram_webhook_start == 0
+
+    t2 = _install_fakes(monkeypatch, has_telegram=True, loop_enabled=True)
+    app2 = app_module.CueApp()
+
+    class _FakeEvent:
+        def set(self):
+            return None
+
+        async def wait(self):
+            return None
+
+    class _FakeLoop:
+        def add_signal_handler(self, sig, handler):  # noqa: ARG002
+            raise NotImplementedError
+
+    monkeypatch.setattr(app_module.asyncio, "Event", _FakeEvent)
+    monkeypatch.setattr(app_module.asyncio, "get_event_loop", lambda: _FakeLoop())
+    original_create_task = app_module.asyncio.create_task
+
+    def _capture_task(coro):
+        t2.created_tasks += 1
+        return original_create_task(coro)
+
+    monkeypatch.setattr(app_module.asyncio, "create_task", _capture_task)
+
+    await app2._run_webhook()
+    assert t2.telegram_webhook_start == 1
     assert t2.created_tasks >= 1
 
 

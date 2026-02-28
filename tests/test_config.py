@@ -19,6 +19,8 @@ def test_default_config():
     assert config.risk_rules_path == "skills/risk_rules.json"
     assert config.notifications_enabled is True
     assert config.notification_delivery_mode == "immediate"
+    assert config.telegram_webhook_path == "/telegram/webhook"
+    assert config.telegram_webhook_secret_token == ""
     assert config.dashboard_enabled is False
     assert config.audit_retention_days == 30
 

@@ -1,0 +1,11 @@
+{$WEBHOOK_DOMAIN} {
+  encode gzip
+
+  @telegram_webhook path {$WEBHOOK_PATH}
+  reverse_proxy @telegram_webhook cue-agent:8081
+
+  @health path /healthz /health /dashboard /dashboard/*
+  reverse_proxy @health cue-agent:8080
+
+  reverse_proxy cue-agent:8080
+}

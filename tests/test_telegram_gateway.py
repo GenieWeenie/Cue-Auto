@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -29,9 +31,26 @@ class _FakeBot:
         self.actions = []
         self.messages = []
         self.documents = []
+        self.webhook_set_calls = []
+        self.webhook_deleted = False
 
     async def set_my_commands(self, commands):
         self.commands = list(commands)
+
+    async def set_webhook(self, **kwargs):
+        self.webhook_set_calls.append(kwargs)
+        return True
+
+    async def get_webhook_info(self):
+        return SimpleNamespace(
+            url="https://example.com/telegram/webhook",
+            pending_update_count=0,
+            last_error_message="",
+            last_error_date=0,
+        )
+
+    async def delete_webhook(self, drop_pending_updates: bool = False):  # noqa: ARG002
+        self.webhook_deleted = True
 
     async def send_chat_action(self, chat_id: int, action: str):
         self.actions.append((chat_id, action))
@@ -49,6 +68,7 @@ class _FakeApplication:
         self.updater = _FakeUpdater()
         self.running = False
         self.bot = _FakeBot()
+        self.processed_updates = []
 
     def add_handler(self, handler):
         self.handlers.append(handler)
@@ -64,6 +84,9 @@ class _FakeApplication:
 
     async def shutdown(self):
         return None
+
+    async def process_update(self, update):
+        self.processed_updates.append(update)
 
     @classmethod
     def builder(cls):
@@ -198,3 +221,88 @@ async def test_start_polling_sets_command_menu(monkeypatch):
     assert any(command.command == "status" for command in gateway.app.bot.commands)
     assert any(command.command == "audit" for command in gateway.app.bot.commands)
     await gateway.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_webhook_requires_secret_token(monkeypatch):
+    monkeypatch.setattr("cue_agent.comms.telegram_gateway.Application", _FakeApplication)
+
+    async def _on_message(msg: UnifiedMessage) -> UnifiedResponse:  # noqa: ARG001
+        return UnifiedResponse(text="ok", chat_id="1")
+
+    gateway = TelegramGateway(
+        CueConfig(
+            telegram_bot_token="token",
+            telegram_webhook_url="https://example.com/telegram/webhook",
+            telegram_webhook_secret_token="",
+        ),
+        _on_message,
+    )
+    with pytest.raises(RuntimeError):
+        await gateway.start_webhook()
+
+
+async def _post_webhook(port: int, path: str, payload: dict[str, object], secret: str) -> int:
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    body = json.dumps(payload).encode("utf-8")
+    request = (
+        f"POST {path} HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Content-Type: application/json\r\n"
+        f"X-Telegram-Bot-Api-Secret-Token: {secret}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("utf-8") + body
+    writer.write(request)
+    await writer.drain()
+    raw = await reader.read()
+    writer.close()
+    await writer.wait_closed()
+    status_line = raw.split(b"\r\n", 1)[0].decode("utf-8")
+    return int(status_line.split(" ")[1])
+
+
+@pytest.mark.asyncio
+async def test_webhook_server_validates_secret_and_processes_update(monkeypatch):
+    monkeypatch.setattr("cue_agent.comms.telegram_gateway.Application", _FakeApplication)
+
+    async def _on_message(msg: UnifiedMessage) -> UnifiedResponse:  # noqa: ARG001
+        return UnifiedResponse(text="ok", chat_id="1")
+
+    gateway = TelegramGateway(
+        CueConfig(
+            telegram_bot_token="token",
+            telegram_webhook_url="https://example.com/telegram/webhook",
+            telegram_webhook_secret_token="secret-123",
+            telegram_webhook_listen_host="127.0.0.1",
+            telegram_webhook_listen_port=0,
+            telegram_webhook_path="/telegram/webhook",
+        ),
+        _on_message,
+    )
+    await gateway.start_webhook()
+    try:
+        assert gateway.webhook_bound_port is not None
+        bad_status = await _post_webhook(
+            gateway.webhook_bound_port,
+            "/telegram/webhook",
+            {"update_id": 1},
+            secret="wrong",
+        )
+        assert bad_status == 401
+
+        ok_status = await _post_webhook(
+            gateway.webhook_bound_port,
+            "/telegram/webhook",
+            {"update_id": 2},
+            secret="secret-123",
+        )
+        assert ok_status == 200
+        assert gateway.app.processed_updates
+        diagnostics = gateway.webhook_diagnostics()
+        assert diagnostics["request_count"] == 1
+        assert diagnostics["rejected_count"] == 1
+        assert diagnostics["registered"] is True
+    finally:
+        await gateway.stop()

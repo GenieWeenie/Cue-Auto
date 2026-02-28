@@ -50,6 +50,7 @@ class CueApp:
         self._is_running = False
         self._action_timeline: list[dict[str, Any]] = []
         self._timeline_limit = max(20, self.config.dashboard_timeline_limit)
+        self._telegram_runtime_mode = "polling"
 
         # --- Memory (EAP StateManager) ---
         self.state_manager = StateManager(db_path=self.config.state_db_path)
@@ -543,15 +544,27 @@ class CueApp:
         queue = status.get("queue", {})
         notifications = status.get("notifications", {})
         memory = status.get("memory", {})
+        telegram = status.get("telegram", {})
 
         provider_line = ", ".join(f"{k}:{v}" for k, v in providers.items()) if isinstance(providers, dict) else "n/a"
         queue_stats = queue.get("task_queue", {}) if isinstance(queue, dict) else {}
         queue_line = ", ".join(f"{k}={v}" for k, v in queue_stats.items()) if isinstance(queue_stats, dict) else "n/a"
+        webhook_line = "n/a"
+        if isinstance(telegram, dict):
+            webhook = telegram.get("webhook", {})
+            if isinstance(webhook, dict):
+                webhook_line = (
+                    f"path={webhook.get('configured_path', 'n/a')} "
+                    f"registered={webhook.get('registered', False)} "
+                    f"requests={webhook.get('request_count', 0)} "
+                    f"rejected={webhook.get('rejected_count', 0)}"
+                )
         return (
             "*CueAgent Status*\n"
             f"- Time (UTC): `{status.get('timestamp_utc', 'n/a')}`\n"
             f"- Loop: `enabled={loop.get('enabled', False)}` `running={loop.get('running', False)}`\n"
             f"- Providers: {provider_line}\n"
+            f"- Telegram webhook: `{webhook_line}`\n"
             f"- Queue: {queue_line}\n"
             f"- Notifications: `enabled={notifications.get('enabled', False)}` "
             f"`mode={notifications.get('mode', 'n/a')}` `queued={notifications.get('queued', 0)}`\n"
@@ -947,6 +960,8 @@ class CueApp:
         try:
             if mode == "polling":
                 await self._run_polling()
+            elif mode == "webhook":
+                await self._run_webhook()
             elif mode == "loop":
                 await self.ralph_loop.run_forever()
             elif mode == "once":
@@ -967,6 +982,7 @@ class CueApp:
             logger.error("Telegram not configured — set CUE_TELEGRAM_BOT_TOKEN")
             return
 
+        self._telegram_runtime_mode = "polling"
         await self.telegram.start_polling()
 
         tasks: list[asyncio.Task[Any]] = []
@@ -974,6 +990,36 @@ class CueApp:
             tasks.append(asyncio.create_task(self.ralph_loop.run_forever()))
 
         # Keep running until interrupted
+        stop_event = asyncio.Event()
+
+        def _signal_handler() -> None:
+            stop_event.set()
+
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _signal_handler)
+            except NotImplementedError:
+                pass
+
+        await stop_event.wait()
+
+        for task in tasks:
+            task.cancel()
+
+    async def _run_webhook(self) -> None:
+        """Run Telegram webhook mode with optional Ralph loop."""
+        if self.telegram is None:
+            logger.error("Telegram not configured — set CUE_TELEGRAM_BOT_TOKEN")
+            return
+
+        self._telegram_runtime_mode = "webhook"
+        await self.telegram.start_webhook()
+
+        tasks: list[asyncio.Task[Any]] = []
+        if self.config.loop_enabled:
+            tasks.append(asyncio.create_task(self.ralph_loop.run_forever()))
+
         stop_event = asyncio.Event()
 
         def _signal_handler() -> None:
@@ -1011,6 +1057,13 @@ class CueApp:
 
     def _build_health_status(self) -> dict[str, Any]:
         uptime_seconds = max(0, int((datetime.now(timezone.utc) - self._started_at).total_seconds()))
+        telegram_diag: dict[str, Any] = {
+            "enabled": bool(self.telegram),
+            "mode": self._telegram_runtime_mode,
+            "webhook": {},
+        }
+        if self.telegram is not None:
+            telegram_diag["webhook"] = self.telegram.webhook_diagnostics()
         return {
             "status": "ok",
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -1038,6 +1091,7 @@ class CueApp:
                 "vector_enabled": self.config.vector_memory_enabled,
                 "vector_available": self.vector_memory.is_available,
             },
+            "telegram": telegram_diag,
         }
 
     def _build_dashboard_snapshot(self) -> dict[str, Any]:
@@ -1061,6 +1115,7 @@ class CueApp:
             "providers": health.get("providers", {}),
             "provider_metrics": provider_metrics,
             "queue": queue,
+            "telegram": health.get("telegram", {}),
             "tasks": tasks,
             "actions": list(reversed(self._action_timeline[-100:])),
             "config": {

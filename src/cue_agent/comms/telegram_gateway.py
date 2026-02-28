@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from datetime import datetime, timezone
+from secrets import compare_digest
 from typing import Any
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
@@ -51,6 +54,7 @@ _CALLBACK_TO_COMMAND: dict[str, str] = {
 }
 
 _MAX_MESSAGE_CHARS = 3500
+_WEBHOOK_READ_LIMIT = 1_048_576
 
 
 class TelegramGateway:
@@ -63,6 +67,13 @@ class TelegramGateway:
         self.config = config
         self.on_message = on_message
         self.on_approval = on_approval
+        self._webhook_server: asyncio.Server | None = None
+        self._webhook_registered = False
+        self._webhook_request_count = 0
+        self._webhook_rejected_count = 0
+        self._webhook_last_request_utc: str | None = None
+        self._webhook_last_error: str = ""
+        self._webhook_remote_info: dict[str, Any] = {}
 
         self.app = Application.builder().token(config.telegram_bot_token).build()
         self.app.add_handler(CommandHandler("start", self._handle_start))
@@ -327,13 +338,179 @@ class TelegramGateway:
         await self.app.initialize()
         await self._configure_command_menu()
         await self.app.start()
+        with suppress(Exception):
+            await self.app.bot.delete_webhook(drop_pending_updates=False)
         if self.app.updater is None:
             raise RuntimeError("Telegram updater is unavailable for polling mode")
         await self.app.updater.start_polling()
         logger.info("Telegram bot polling started")
 
+    async def start_webhook(self) -> None:
+        """Start the bot in webhook mode with secret-token verification."""
+        webhook_url = self.config.telegram_webhook_url.strip()
+        webhook_path = self.config.telegram_webhook_path.strip() or "/telegram/webhook"
+        if not webhook_path.startswith("/"):
+            webhook_path = f"/{webhook_path}"
+        secret_token = self.config.telegram_webhook_secret_token.strip()
+        if not webhook_url:
+            raise RuntimeError("CUE_TELEGRAM_WEBHOOK_URL is required for webhook mode")
+        if not secret_token:
+            raise RuntimeError("CUE_TELEGRAM_WEBHOOK_SECRET_TOKEN is required for webhook mode")
+
+        logger.info(
+            "Starting Telegram bot in webhook mode",
+            extra={
+                "event": "telegram_webhook_starting",
+                "webhook_url": webhook_url,
+                "webhook_path": webhook_path,
+                "listen_host": self.config.telegram_webhook_listen_host,
+                "listen_port": self.config.telegram_webhook_listen_port,
+            },
+        )
+        await self.app.initialize()
+        await self._configure_command_menu()
+        await self.app.start()
+
+        self._webhook_registered = await self.app.bot.set_webhook(
+            url=webhook_url,
+            secret_token=secret_token,
+            drop_pending_updates=self.config.telegram_webhook_drop_pending_updates,
+        )
+        with suppress(Exception):
+            info = await self.app.bot.get_webhook_info()
+            self._webhook_remote_info = {
+                "url": str(getattr(info, "url", "")),
+                "pending_update_count": int(getattr(info, "pending_update_count", 0)),
+                "last_error_message": str(getattr(info, "last_error_message", "")),
+                "last_error_date": int(getattr(info, "last_error_date", 0)),
+            }
+
+        self._webhook_server = await asyncio.start_server(
+            self._handle_webhook_client,
+            host=self.config.telegram_webhook_listen_host,
+            port=self.config.telegram_webhook_listen_port,
+        )
+        logger.info(
+            "Telegram webhook server started",
+            extra={
+                "event": "telegram_webhook_started",
+                "listen_host": self.config.telegram_webhook_listen_host,
+                "listen_port": self.webhook_bound_port,
+                "webhook_path": webhook_path,
+                "registered": self._webhook_registered,
+            },
+        )
+
+    @property
+    def webhook_bound_port(self) -> int | None:
+        if self._webhook_server is None or not self._webhook_server.sockets:
+            return None
+        return int(self._webhook_server.sockets[0].getsockname()[1])
+
+    def webhook_diagnostics(self) -> dict[str, Any]:
+        webhook_path = self.config.telegram_webhook_path.strip() or "/telegram/webhook"
+        if not webhook_path.startswith("/"):
+            webhook_path = f"/{webhook_path}"
+        return {
+            "configured_url": self.config.telegram_webhook_url,
+            "configured_path": webhook_path,
+            "listen_host": self.config.telegram_webhook_listen_host,
+            "listen_port": self.config.telegram_webhook_listen_port,
+            "bound_port": self.webhook_bound_port,
+            "secret_configured": bool(self.config.telegram_webhook_secret_token),
+            "registered": self._webhook_registered,
+            "request_count": self._webhook_request_count,
+            "rejected_count": self._webhook_rejected_count,
+            "last_request_utc": self._webhook_last_request_utc,
+            "last_error": self._webhook_last_error,
+            "remote_info": dict(self._webhook_remote_info),
+        }
+
+    async def _handle_webhook_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            raw = await reader.read(_WEBHOOK_READ_LIMIT)
+            method, path, headers, body = self._parse_http_request(raw)
+            webhook_path = self.config.telegram_webhook_path.strip() or "/telegram/webhook"
+            if not webhook_path.startswith("/"):
+                webhook_path = f"/{webhook_path}"
+
+            if method != "POST" or path != webhook_path:
+                await self._write_http_response(writer, status="404 Not Found", body=b'{"error":"not_found"}')
+                return
+
+            expected_secret = self.config.telegram_webhook_secret_token.strip()
+            actual_secret = headers.get("x-telegram-bot-api-secret-token", "")
+            if not expected_secret or not compare_digest(actual_secret, expected_secret):
+                self._webhook_rejected_count += 1
+                self._webhook_last_error = "secret_token_mismatch"
+                await self._write_http_response(writer, status="401 Unauthorized", body=b'{"error":"unauthorized"}')
+                return
+
+            payload = json.loads(body.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("webhook payload must be an object")
+            update = Update.de_json(payload, self.app.bot)
+            if update is None:
+                raise ValueError("failed to decode Telegram update")
+
+            await self.app.process_update(update)
+            self._webhook_request_count += 1
+            self._webhook_last_request_utc = datetime.now(timezone.utc).isoformat()
+            self._webhook_last_error = ""
+            await self._write_http_response(writer, status="200 OK", body=b'{"ok":true}')
+        except Exception as exc:
+            self._webhook_last_error = str(exc)[:200]
+            logger.exception("Telegram webhook request failed")
+            with suppress(Exception):
+                await self._write_http_response(
+                    writer,
+                    status="500 Internal Server Error",
+                    body=b'{"error":"internal_error"}',
+                )
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    @staticmethod
+    def _parse_http_request(raw: bytes) -> tuple[str, str, dict[str, str], bytes]:
+        header_blob, _, body = raw.partition(b"\r\n\r\n")
+        lines = header_blob.decode("utf-8", errors="replace").split("\r\n")
+        request_line = lines[0] if lines else ""
+        parts = request_line.split(" ")
+        method = parts[0] if len(parts) >= 1 else ""
+        path = parts[1] if len(parts) >= 2 else ""
+        headers: dict[str, str] = {}
+        for line in lines[1:]:
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            headers[key.strip().lower()] = value.strip()
+        return method, path, headers, body
+
+    @staticmethod
+    async def _write_http_response(writer: asyncio.StreamWriter, *, status: str, body: bytes) -> None:
+        headers = [
+            f"HTTP/1.1 {status}",
+            "Content-Type: application/json",
+            f"Content-Length: {len(body)}",
+            "Connection: close",
+            "Cache-Control: no-store",
+            "",
+            "",
+        ]
+        writer.write("\r\n".join(headers).encode("utf-8") + body)
+        await writer.drain()
+
     async def stop(self) -> None:
         """Gracefully stop the bot."""
+        if self._webhook_server is not None:
+            self._webhook_server.close()
+            await self._webhook_server.wait_closed()
+            self._webhook_server = None
+        if self._webhook_registered:
+            with suppress(Exception):
+                await self.app.bot.delete_webhook(drop_pending_updates=False)
+            self._webhook_registered = False
         if self.app.updater and self.app.updater.running:
             await self.app.updater.stop()
         if self.app.running:
