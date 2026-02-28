@@ -1,6 +1,6 @@
 # CueAgent
 
-[![CI](https://github.com/your-username/Cue-Auto/actions/workflows/ci.yml/badge.svg)](https://github.com/your-username/Cue-Auto/actions/workflows/ci.yml)
+[![CI](https://github.com/GenieWeenie/Cue-Auto/actions/workflows/ci.yml/badge.svg)](https://github.com/GenieWeenie/Cue-Auto/actions/workflows/ci.yml)
 
 Autonomous AI agent built on the [Efficient Agent Protocol (EAP)](https://github.com/GenieWeenie/efficient-agent-protocol). CueAgent combines a cascading multi-provider LLM brain, Telegram interface, hot-reloadable skills, optional long-term vector memory, and a Ralph-style autonomous loop into a single cohesive system.
 
@@ -149,7 +149,7 @@ Cue-Auto/
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/Cue-Auto.git
+git clone https://github.com/GenieWeenie/Cue-Auto.git
 cd Cue-Auto
 
 # Create virtual environment
@@ -598,6 +598,15 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 | `CUE_TELEGRAM_WEBHOOK_DROP_PENDING_UPDATES` | `false` | Drop pending Telegram updates when setting webhook |
 | `CUE_AUDIT_RETENTION_DAYS` | `30` | Days to keep audit records before cleanup |
 | `CUE_AUDIT_CLEANUP_CRON` | `15 3 * * *` | Daily cron for audit retention cleanup |
+| `CUE_RUN_MODE` | (CLI `--mode`) | Docker/compose: `polling`, `webhook`, `loop`, or `once` |
+| `CUE_RETRY_TOOL_ATTEMPTS` | `3` | Max retries for tool execution |
+| `CUE_RETRY_TELEGRAM_ATTEMPTS` | `5` | Max retries for Telegram API calls |
+| `CUE_RETRY_LLM_ATTEMPTS` | `3` | Max retries for LLM requests |
+| `CUE_RETRY_BASE_DELAY_SECONDS` | `0.5` | Base delay for exponential backoff |
+| `CUE_RETRY_MAX_DELAY_SECONDS` | `5.0` | Max delay between retries |
+| `CUE_RETRY_JITTER_SECONDS` | `0.2` | Jitter added to retry delay |
+| `CUE_CIRCUIT_BREAKER_FAILURES` | `3` | Failures before circuit opens |
+| `CUE_CIRCUIT_BREAKER_COOLDOWN_SECONDS` | `300` | Cooldown before retry after circuit open |
 
 ## License
 

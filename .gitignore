@@ -35,6 +35,7 @@ data/*
 # OS
 Thumbs.db
 .DS_Store
+nul
 
 # Logs
 *.log
