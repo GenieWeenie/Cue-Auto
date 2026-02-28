@@ -38,5 +38,5 @@ jobs:
         run: mypy src/cue_agent
 
       - name: Pytest + coverage
-        run: pytest -q --cov=src/cue_agent --cov-report=term-missing --cov-fail-under=80
+        run: pytest -q --cov=src/cue_agent --cov-report=term-missing --cov-fail-under=82
 
