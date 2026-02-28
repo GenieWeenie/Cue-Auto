@@ -28,7 +28,7 @@ class VerificationResult:
 
 
 class Verifier:
-    def __init__(self, brain: CueBrain):
+    def __init__(self, brain: CueBrain) -> None:
         self._brain = brain
 
     def verify(self, task: str, result: str) -> VerificationResult:

@@ -23,7 +23,7 @@ class MockSkillContext:
 class SkillTestHarness:
     """Loads and exercises a skill module in isolation."""
 
-    def __init__(self, module: ModuleType):
+    def __init__(self, module: ModuleType) -> None:
         self._module = module
 
     @classmethod
