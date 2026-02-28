@@ -62,6 +62,8 @@ CueAgent is organized into 6 blocks, all wired together by the `CueApp` orchestr
 - **Risk rules file** — JSON policy file (`skills/risk_rules.json` by default) with custom shell/path risk patterns and approval levels.
 - **ApprovalGate** — Bridges EAP's HITL (human-in-the-loop) checkpoints to Telegram approval buttons.
 
+See [docs/security.md](docs/security.md) for operational security, RBAC, and approval flows.
+
 ### Heartbeat
 
 - **Scheduler** — APScheduler async cron for recurring tasks.

@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Autonomous AI agent built on the Efficient Agent Protocol"
 requires-python = ">=3.11"
 dependencies = [
-    "efficient-agent-protocol @ git+https://github.com/GenieWeenie/efficient-agent-protocol.git",
+    "efficient-agent-protocol @ git+https://github.com/GenieWeenie/efficient-agent-protocol.git@4720b5ad83ac62bad9adb45331e72eca2ae7f463",
     "openai>=1.30.0",
     "anthropic>=0.25.0",
     "python-telegram-bot[webhooks]>=22.0",

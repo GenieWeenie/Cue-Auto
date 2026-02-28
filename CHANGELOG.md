@@ -10,6 +10,11 @@ All notable changes to CueAgent are documented here. The format is based on [Kee
 - ROADMAP.md and ROADMAP_DETAILED.md for post-launch fixes and improvements.
 - README project structure extended with `orchestration/`, `audit/`, `notifications/`, and top-level helpers.
 - Explicit deployment guide link under "One-command Docker Deploy" in README.
+- docs/architecture.md describing orchestration, audit, and notification flows.
+- docs/security.md for risk controls, approval flows, RBAC, and operational security.
+- Deployment guide: "Backup and runbook", "Secrets rotation", and "Health and dashboard in production" sections.
+- README Security section link to docs/security.md.
+- EAP dependency pinned to commit `4720b5ad` in pyproject.toml for reproducible installs.
 
 ### Changed
 
