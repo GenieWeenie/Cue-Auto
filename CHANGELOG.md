@@ -15,6 +15,9 @@ All notable changes to CueAgent are documented here. The format is based on [Kee
 - Deployment guide: "Backup and runbook", "Secrets rotation", and "Health and dashboard in production" sections.
 - README Security section link to docs/security.md.
 - EAP dependency pinned to commit `4720b5ad` in pyproject.toml for reproducible installs.
+- docs/skills-sdk.md: "Skill marketplace" section (registry location, usage, how to submit).
+- docs/observability.md: logging, cost/latency/errors, optional metrics extensions.
+- docs/deployment.md: link to observability.md.
 
 ### Changed
 

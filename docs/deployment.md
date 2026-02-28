@@ -1,6 +1,6 @@
 # CueAgent Deployment Guide
 
-This guide covers production deployment options for CueAgent. For risk controls, approval flows, and RBAC, see [security](security.md).
+This guide covers production deployment options for CueAgent. For risk controls, approval flows, and RBAC, see [security](security.md). For logging, cost, and metrics in production, see [observability](observability.md).
 
 1. Docker Compose (recommended)
 2. Docker Compose webhook + automatic SSL

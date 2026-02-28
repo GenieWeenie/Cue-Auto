@@ -135,6 +135,29 @@ See:
 
 These are reference implementations and are not auto-loaded by default.
 
+## Skill marketplace
+
+CueAgent includes a **local** skill registry for search, install, and update. The registry and packages live inside the repo (or your fork).
+
+### Where to find the registry
+
+- **Registry index** — `skills/registry/index.json` (path configurable via `CUE_SKILLS_REGISTRY_INDEX_PATH`). Lists skill ids, names, descriptions, tags, and version entries with `package_path`, `cue_agent_constraint`, and metadata.
+- **Packaged skills** — `skills/registry_packages/` (configurable via `CUE_SKILLS_REGISTRY_PACKAGES_DIR`). Each entry is either a `.py` file or a versioned folder (e.g. `release_digest/1.1.0/`) containing the skill code. Installed skills are tracked in `skills/.marketplace-installed.json` (`CUE_SKILLS_REGISTRY_STATE_PATH`).
+
+### Using the marketplace
+
+- **CLI:** `cue-agent marketplace search <query>`, `cue-agent marketplace install <skill_id> [--version X.Y.Z]`, `cue-agent marketplace update <skill_id|all>`, `cue-agent marketplace validate-registry`, `cue-agent marketplace validate-submission <path>`.
+- **Telegram:** `/market search <query>`, `/market install <skill_id> [version]`, `/market update [skill_id|all]`.
+
+### Submitting a skill to the registry
+
+1. **Build your skill** — Use the [manifest and tool patterns](#manifest-pattern) above; optional `prompt.md` and `config.yaml` for skill packs.
+2. **Validate locally** — Run `cue-agent marketplace validate-submission <path>` where `<path>` is the path to your `.py` file or skill-pack directory. This checks manifest shape, tool/function mapping, semver, CueAgent compatibility, and basic security rules.
+3. **Add to the registry** — For this repo’s registry, add your skill to `skills/registry/index.json` (follow the existing structure: `id`, `name`, `description`, `tags`, `versions` with `version`, `cue_agent_constraint`, `package_path`, etc.) and place the skill code under `skills/registry_packages/<id>/<version>/` (or a single `.py` file as documented in the index). Then open a pull request.
+4. **Optional** — Run `cue-agent marketplace validate-registry` (and `--strict` if you want warnings as errors) before committing.
+
+The registry is **in-repo** and not a separate public service; “submission” means contributing to the repo’s `skills/registry` and `skills/registry_packages` and following the validation rules above.
+
 ## Troubleshooting
 
 1. Skill not loading
