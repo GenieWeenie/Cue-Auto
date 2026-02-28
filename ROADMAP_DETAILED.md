@@ -34,8 +34,8 @@ Use this list to track fixes and improvements. Items are mirrored as issues in t
 
 - [ ] **Python 3.14** — When EAP supports 3.14, update README and CI (e.g. add 3.14 to matrix) if desired.
 - [x] **Security section** — Add a short “Security” or “Operational security” section in docs (risk_rules.json, approval flows, key practices).
-- [ ] **Observability** — Optional: document or extend logging/metrics (cost, latency, errors) for production.
-- [ ] **Skills marketplace** — If the registry is public: add in README or docs where to find it and how to submit skills.
+- [x] **Observability** — Optional: document or extend logging/metrics (cost, latency, errors) for production.
+- [x] **Skills marketplace** — If the registry is public: add in README or docs where to find it and how to submit skills.
 
 ---
 
