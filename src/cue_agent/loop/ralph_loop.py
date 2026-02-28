@@ -15,6 +15,11 @@ from cue_agent.actions.registry import ActionRegistry
 from cue_agent.brain.cue_brain import CueBrain
 from cue_agent.config import CueConfig
 from cue_agent.logging_utils import correlation_context, new_correlation_id
+from cue_agent.orchestration.multi_agent import (
+    SUB_AGENT_STATUS_COMPLETED,
+    MultiAgentOrchestrator,
+    SubAgentSpec,
+)
 from cue_agent.loop.task_picker import TaskPicker
 from cue_agent.loop.task_queue import TASK_STATUS_PENDING, TaskQueue
 from cue_agent.loop.verifier import Verifier
@@ -43,6 +48,7 @@ class RalphLoop:
         vector_memory: VectorMemory | None = None,
         task_queue: TaskQueue | None = None,
         notification_handler: Callable[[dict[str, Any]], None] | None = None,
+        multi_agent_orchestrator: MultiAgentOrchestrator | None = None,
     ):
         self.brain = brain
         self.memory = memory
@@ -54,6 +60,7 @@ class RalphLoop:
         self.approval_gate = approval_gate
         self.config = config
         self._notification_handler = notification_handler
+        self._multi_agent_orchestrator = multi_agent_orchestrator
         self._task_picker = TaskPicker(brain)
         self._verifier = Verifier(brain)
         self._running = False
@@ -118,9 +125,11 @@ class RalphLoop:
         # 2. PICK — select next task
         selected_task_id: int | None = None
         task = None
+        queued_task: dict[str, Any] | None = None
         if self.task_queue is not None and self.config.task_queue_enabled:
             queued = self.task_queue.next_unblocked_task()
             if queued is not None:
+                queued_task = queued
                 selected_task_id = int(queued["id"])
                 task = str(queued["title"])
                 description = str(queued.get("description", "")).strip()
@@ -137,11 +146,19 @@ class RalphLoop:
                 return
 
         self._current_task = str(task).split("\n", 1)[0][:240]
+        run_id = f"loop_{self._iteration_count}_{uuid4().hex[:6]}"
 
         try:
             # 3. PLAN — generate EAP macro
             manifest = self.actions.get_hashed_manifest()
             memory_ctx = self.memory.get_context(LOOP_CHAT_ID, limit=10)
+            delegated_context = await self._delegate_subtasks(
+                selected_task_id=selected_task_id,
+                queued_task=queued_task,
+                parent_agent_id=f"loop-{self._iteration_count}",
+            )
+            if delegated_context:
+                memory_ctx = f"{memory_ctx}\n\n{delegated_context}" if memory_ctx else delegated_context
             if self.vector_memory is not None:
                 vector_ctx = self.vector_memory.recall_as_context(LOOP_CHAT_ID, task)
                 if vector_ctx:
@@ -153,7 +170,6 @@ class RalphLoop:
             macro = self.approval_gate.inject_approvals(macro)
 
             # 5. EXECUTE — run via EAP's AsyncLocalExecutor
-            run_id = f"loop_{self._iteration_count}_{uuid4().hex[:6]}"
             try:
                 result = await self._execute_macro_with_retry(macro, run_id=run_id)
             except Exception as exc:
@@ -313,6 +329,86 @@ class RalphLoop:
                         "parent_task_id": parent_id,
                     },
                 )
+
+    async def _delegate_subtasks(
+        self,
+        *,
+        selected_task_id: int | None,
+        queued_task: dict[str, Any] | None,
+        parent_agent_id: str,
+    ) -> str:
+        if selected_task_id is None or queued_task is None:
+            return ""
+        if self.task_queue is None or self._multi_agent_orchestrator is None:
+            return ""
+        if not getattr(self.config, "multi_agent_enabled", True):
+            return ""
+
+        max_concurrent = max(1, int(getattr(self.config, "multi_agent_max_concurrent", 3)))
+        timeout_seconds = max(1, int(getattr(self.config, "multi_agent_subagent_timeout_seconds", 120)))
+        provider_preference = str(
+            getattr(self.config, "multi_agent_default_provider_preference", "auto")
+        ).strip() or "auto"
+        children = self.task_queue.list_child_tasks(parent_task_id=selected_task_id, status=TASK_STATUS_PENDING, limit=50)
+        if not children:
+            return ""
+
+        specs: list[SubAgentSpec] = []
+        for child in children:
+            child_id = int(child["id"])
+            title = str(child.get("title", "")).strip()
+            if not title:
+                continue
+            description = str(child.get("description", "")).strip()
+            self.task_queue.mark_in_progress(child_id)
+            prompt_parts = [
+                f"Sub-task #{child_id}: {title}",
+                "Return concise findings and explicit next action(s).",
+            ]
+            if description:
+                prompt_parts.append(f"Additional context: {description}")
+            specs.append(
+                SubAgentSpec(
+                    agent_id=f"task-{child_id}",
+                    prompt="\n".join(prompt_parts),
+                    skill_scopes=("analysis", "execution"),
+                    provider_preference=provider_preference,
+                    timeout_seconds=timeout_seconds,
+                    metadata={"task_id": child_id},
+                )
+            )
+
+        if not specs:
+            return ""
+
+        specs = specs[: max(max_concurrent * 2, max_concurrent)]
+        results = await self._multi_agent_orchestrator.run_handoff(
+            parent_task=str(queued_task.get("title", "")),
+            specs=specs,
+            parent_agent_id=parent_agent_id,
+        )
+        if not results:
+            return ""
+
+        lines = ["Sub-agent handoff summary:"]
+        for result in results:
+            task_id_obj = result.metadata.get("task_id")
+            child_task_id = int(task_id_obj) if isinstance(task_id_obj, int) else None
+            if child_task_id is not None:
+                if result.status == SUB_AGENT_STATUS_COMPLETED:
+                    self.task_queue.mark_done(child_task_id)
+                else:
+                    message = result.error.strip() or f"sub-agent status={result.status}"
+                    self.task_queue.mark_failed(
+                        child_task_id,
+                        error=message,
+                        retry_limit=self.config.task_queue_retry_failed_attempts,
+                    )
+            summary = result.output.strip().splitlines()[0] if result.output.strip() else result.error.strip()
+            if not summary:
+                summary = result.status
+            lines.append(f"- {result.agent_id}: {result.status} ({summary[:140]})")
+        return "\n".join(lines)
 
 
 def _parse_subtasks(text: str, max_items: int) -> list[str]:

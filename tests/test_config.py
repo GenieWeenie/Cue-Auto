@@ -30,6 +30,10 @@ def test_default_config():
     assert config.skills_registry_index_path == "skills/registry/index.json"
     assert config.skills_registry_packages_dir == "skills/registry_packages"
     assert config.skills_registry_state_path == "skills/.marketplace-installed.json"
+    assert config.multi_agent_enabled is True
+    assert config.multi_agent_max_concurrent == 3
+    assert config.multi_agent_subagent_timeout_seconds == 120
+    assert config.multi_agent_default_provider_preference == "auto"
 
 
 def test_has_provider_flags():

@@ -69,3 +69,18 @@ def test_task_queue_subtasks_and_listing(tmp_path):
     by_id = {row["id"]: row for row in rows}
     assert by_id[parent_id]["parent_task_id"] is None
     assert by_id[child_id]["parent_task_id"] == parent_id
+
+
+def test_task_queue_list_child_tasks_by_status(tmp_path):
+    db_path = str(tmp_path / "queue.db")
+    queue = TaskQueue(db_path)
+    parent_id = queue.create_task("Parent", priority=2)
+    pending_child_id = queue.create_subtask(parent_id, "Pending child", priority=3)
+    done_child_id = queue.create_subtask(parent_id, "Done child", priority=3)
+    queue.mark_done(done_child_id)
+
+    pending_rows = queue.list_child_tasks(parent_id, status=TASK_STATUS_PENDING, limit=10)
+    all_rows = queue.list_child_tasks(parent_id, status=None, limit=10)
+
+    assert [row["id"] for row in pending_rows] == [pending_child_id]
+    assert {row["id"] for row in all_rows} == {pending_child_id, done_child_id}

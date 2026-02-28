@@ -229,7 +229,7 @@ docker compose -f docker-compose.yml -f docker-compose.webhook.yml up -d --build
 python -m cue_agent --mode polling
 ```
 
-Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`, `/audit`, `/users`, `/market`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
+Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/agents`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`, `/audit`, `/users`, `/market`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
 
 ### Webhook Mode (Telegram HTTPS)
 
@@ -287,6 +287,7 @@ Use these in Telegram chat:
 
 - `/help` — command center with quick navigation actions
 - `/status` — runtime health snapshot
+- `/agents` — active multi-agent tree, sub-agent lifecycle state, and delegated usage/cost totals
 - `/skills` — loaded skill summary
 - `/settings` — runtime settings snapshot
 - `/approve` — pending approval queue
@@ -567,6 +568,10 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 | `CUE_TASK_QUEUE_RETRY_FAILED_ATTEMPTS` | `2` | Retry attempts before marking task failed |
 | `CUE_TASK_QUEUE_AUTO_SUBTASKS_ENABLED` | `true` | Allow loop agent to generate sub-tasks |
 | `CUE_TASK_QUEUE_AUTO_SUBTASKS_MAX` | `3` | Max auto-generated sub-tasks per parent task |
+| `CUE_MULTI_AGENT_ENABLED` | `true` | Enable multi-agent delegation for child queue tasks |
+| `CUE_MULTI_AGENT_MAX_CONCURRENT` | `3` | Maximum concurrent sub-agents during handoff |
+| `CUE_MULTI_AGENT_SUBAGENT_TIMEOUT_SECONDS` | `120` | Timeout per sub-agent before kill/timeout state |
+| `CUE_MULTI_AGENT_DEFAULT_PROVIDER_PREFERENCE` | `auto` | Preferred provider for sub-agents (`auto`, `openai`, `anthropic`, `openrouter`, `lmstudio`) |
 | `CUE_HEALTHCHECK_ENABLED` | `true` | Enable `/healthz` endpoint for probes |
 | `CUE_HEALTHCHECK_HOST` | `0.0.0.0` | Health endpoint bind host |
 | `CUE_HEALTHCHECK_PORT` | `8080` | Health endpoint bind port |

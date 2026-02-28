@@ -299,6 +299,26 @@ class TaskQueue:
             ).fetchone()
             return int(row["count"]) if row is not None else 0
 
+    def list_child_tasks(self, parent_task_id: int, status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        capped_limit = max(1, limit)
+        with self._lock:
+            self._refresh_blocked_states_locked(now=_utcnow())
+            params: tuple[Any, ...]
+            query = """
+                SELECT * FROM tasks
+                WHERE parent_task_id = ?
+            """
+            params = (parent_task_id,)
+            if status is not None:
+                query += " AND status = ?"
+                params = (parent_task_id, status)
+            query += " ORDER BY priority ASC, created_at ASC LIMIT ?"
+            params = (*params, capped_limit)
+            rows = self._conn.execute(query, params).fetchall()
+            task_ids = [int(row["id"]) for row in rows]
+            dep_map = self._dependency_map_locked(task_ids)
+            return [self._row_to_task(row, dep_map.get(int(row["id"]), [])) for row in rows]
+
     def queue_stats(self) -> dict[str, int]:
         with self._lock:
             rows = self._conn.execute(

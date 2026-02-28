@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable, cast
+from typing import Any, Callable, Iterable, Iterator, cast
 
 from agent.providers.base import (
     CompletionRequest,
@@ -35,6 +37,7 @@ _COMPLEXITY_KEYWORDS = (
     "reason",
     "strategy",
 )
+_PREFERRED_PROVIDER_CTX: ContextVar[str | None] = ContextVar("cue_agent_preferred_provider", default=None)
 
 
 class LLMAllProvidersDownError(RuntimeError):
@@ -202,7 +205,23 @@ class LLMRouter:
         for name in self._providers:
             if name not in ordered:
                 ordered.append(name)
+        selected = _PREFERRED_PROVIDER_CTX.get()
+        if selected and selected in ordered:
+            ordered.remove(selected)
+            ordered.insert(0, selected)
         return ordered
+
+    @contextmanager
+    def provider_preference(self, provider_name: str) -> Iterator[None]:
+        cleaned = provider_name.strip().lower()
+        if not cleaned:
+            yield
+            return
+        token = _PREFERRED_PROVIDER_CTX.set(cleaned)
+        try:
+            yield
+        finally:
+            _PREFERRED_PROVIDER_CTX.reset(token)
 
     def _estimate_cost_usd(
         self,

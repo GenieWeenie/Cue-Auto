@@ -79,6 +79,7 @@ class _FakeVectorMemory:
 class _FakeTaskQueue:
     def __init__(self):
         self._next_task: dict | None = None
+        self._children: list[dict] = []
         self.marked_in_progress: list[int] = []
         self.marked_done: list[int] = []
         self.marked_failed: list[dict] = []
@@ -91,6 +92,12 @@ class _FakeTaskQueue:
         if self._next_task is None:
             return []
         return [self._next_task]
+
+    def list_child_tasks(self, parent_task_id: int, status: str | None = None, limit: int = 20):  # noqa: ARG002
+        rows = [row for row in self._children if row["parent_task_id"] == parent_task_id]
+        if status is not None:
+            rows = [row for row in rows if row["status"] == status]
+        return list(rows)
 
     def mark_in_progress(self, task_id: int) -> None:
         self.marked_in_progress.append(task_id)
@@ -128,6 +135,27 @@ def test_verifier_parses_success_and_failure():
 
     assert success_verifier.verify("t", "r").success is True
     assert failure_verifier.verify("t", "r").success is False
+
+
+class _FakeOrchestrator:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    async def run_handoff(self, *, parent_task: str, specs: list, parent_agent_id: str):
+        self.calls.append({"parent_task": parent_task, "spec_count": len(specs), "parent_agent_id": parent_agent_id})
+        if not specs:
+            return []
+        first = specs[0]
+        task_id = int(first.metadata["task_id"])
+        return [
+            SimpleNamespace(
+                agent_id=first.agent_id,
+                status="completed",
+                output="delegated done",
+                error="",
+                metadata={"task_id": task_id},
+            )
+        ]
 
 
 @pytest.mark.asyncio
@@ -309,3 +337,53 @@ async def test_ralph_loop_creates_agent_subtasks_from_queue_item():
     assert len(task_queue.created_subtasks) == 2
     assert task_queue.created_subtasks[0]["parent_task_id"] == 9
     assert task_queue.created_subtasks[0]["source"] == "agent_autosubtask"
+
+
+@pytest.mark.asyncio
+async def test_ralph_loop_delegates_child_subtasks_to_multi_agent_orchestrator():
+    brain = _FakeBrain(["SUCCESS - done"])
+    memory = _FakeMemory()
+    actions = _FakeActions()
+    executor = _FakeExecutor()
+    task_queue = _FakeTaskQueue()
+    task_queue._next_task = {
+        "id": 12,
+        "title": "Parent issue",
+        "description": "Parent description",
+        "priority": 2,
+    }
+    task_queue._children = [
+        {
+            "id": 13,
+            "title": "Child task",
+            "description": "Investigate logs",
+            "priority": 3,
+            "status": "pending",
+            "parent_task_id": 12,
+        }
+    ]
+    orchestrator = _FakeOrchestrator()
+    loop = RalphLoop(
+        brain=brain,
+        memory=memory,
+        actions=actions,
+        executor=executor,
+        state_manager=object(),
+        approval_gate=_FakeApprovalGate(),
+        config=CueConfig(
+            task_queue_enabled=True,
+            task_queue_auto_subtasks_enabled=False,
+            multi_agent_enabled=True,
+            multi_agent_max_concurrent=3,
+            multi_agent_subagent_timeout_seconds=60,
+            multi_agent_default_provider_preference="openai",
+        ),
+        task_queue=task_queue,
+        multi_agent_orchestrator=orchestrator,  # type: ignore[arg-type]
+    )
+
+    await loop.run_once()
+
+    assert len(orchestrator.calls) == 1
+    assert task_queue.marked_done == [13, 12]
+    assert "Sub-agent handoff summary" in brain.plan_calls[0]["memory_context"]

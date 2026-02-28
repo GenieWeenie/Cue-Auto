@@ -102,6 +102,10 @@ def _install_fakes(
             self.task_queue_retry_failed_attempts = 2
             self.task_queue_auto_subtasks_enabled = True
             self.task_queue_auto_subtasks_max = 3
+            self.multi_agent_enabled = True
+            self.multi_agent_max_concurrent = 3
+            self.multi_agent_subagent_timeout_seconds = 120
+            self.multi_agent_default_provider_preference = "auto"
             self.healthcheck_enabled = False
             self.healthcheck_host = "127.0.0.1"
             self.healthcheck_port = 0
@@ -547,6 +551,7 @@ async def test_app_init_without_telegram_and_handle_message(monkeypatch):
     assert health["providers"] == {"openai": "unknown"}
     assert health["memory"] == {"vector_enabled": False, "vector_available": False}
     assert health["notifications"]["enabled"] is True
+    assert health["agents"]["enabled"] is True
 
 
 def test_app_dashboard_snapshot_and_timeline(monkeypatch):
@@ -617,6 +622,11 @@ async def test_app_task_commands(monkeypatch):
     status_response = await app._handle_message(status_msg)
     assert "CueAgent Status" in status_response.text
     assert status_response.ui_mode == "status"
+
+    agents_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u1", text="/agents")
+    agents_response = await app._handle_message(agents_msg)
+    assert "Multi-Agent Orchestration" in agents_response.text
+    assert agents_response.ui_mode == "status"
 
     skills_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u1", text="/skills")
     skills_response = await app._handle_message(skills_msg)

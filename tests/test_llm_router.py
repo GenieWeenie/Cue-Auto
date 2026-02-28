@@ -291,6 +291,35 @@ def test_llm_router_routes_complex_requests_to_strong_provider(monkeypatch):
     assert lmstudio.calls == 0
 
 
+def test_llm_router_provider_preference_overrides_order(monkeypatch):
+    openai = _FakeProvider("openai")
+    lmstudio = _FakeProvider("lmstudio")
+
+    def fake_create_provider(provider_name: str, base_url: str, api_key: str, timeout_seconds: int):  # noqa: ARG001
+        if provider_name == "openai":
+            return openai
+        return lmstudio
+
+    monkeypatch.setattr("cue_agent.brain.llm_router.create_provider", fake_create_provider)
+
+    router = LLMRouter(
+        CueConfig(
+            openai_api_key="sk-test",
+            lmstudio_base_url="http://localhost:1234",
+            retry_base_delay_seconds=0.0,
+            retry_max_delay_seconds=0.0,
+            retry_jitter_seconds=0.0,
+        )
+    )
+
+    with router.provider_preference("openai"):
+        response = router.complete(_request())
+
+    assert response.text == "ok:openai"
+    assert openai.calls == 1
+    assert lmstudio.calls == 0
+
+
 def test_llm_router_usage_summary_tracks_estimated_cost(monkeypatch):
     openai = _FakeProvider("openai", usage={"prompt_tokens": 1000, "completion_tokens": 500})
     lmstudio = _FakeProvider("lmstudio")

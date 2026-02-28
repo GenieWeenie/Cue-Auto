@@ -111,6 +111,10 @@ class CueConfig(BaseSettings):
     task_queue_retry_failed_attempts: int = 2
     task_queue_auto_subtasks_enabled: bool = True
     task_queue_auto_subtasks_max: int = 3
+    multi_agent_enabled: bool = True
+    multi_agent_max_concurrent: int = 3
+    multi_agent_subagent_timeout_seconds: int = 120
+    multi_agent_default_provider_preference: str = "auto"
 
     # --- Healthcheck endpoint ---
     healthcheck_enabled: bool = True

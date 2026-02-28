@@ -208,6 +208,7 @@ class HealthServer:
     def _render_home(self, snapshot: dict[str, Any]) -> str:
         runtime = snapshot.get("runtime", {})
         providers = snapshot.get("providers", {})
+        agents = snapshot.get("agents", {})
         queue = snapshot.get("queue", {})
         queue_stats = queue.get("task_queue", {}) if isinstance(queue, dict) else {}
         provider_lines = self._provider_badges(providers)
@@ -219,6 +220,7 @@ class HealthServer:
                 f"{self._card('Runtime', self._runtime_lines(runtime))}"
                 f"{self._card('Current Task', self._text_or_none(runtime.get('current_task')))}"
                 f"{self._card('Provider Health', provider_lines)}"
+                f"{self._card('Multi-Agent', self._agent_lines(agents))}"
                 f"{self._card('Task Queue', self._queue_lines(queue_stats))}"
                 "</section>"
             ),
@@ -374,6 +376,22 @@ class HealthServer:
             return "No queue data."
         pieces = [f"{escape(str(k))}=<code>{escape(str(v))}</code>" for k, v in sorted(queue_stats.items())]
         return "<div>" + " · ".join(pieces) + "</div>"
+
+    def _agent_lines(self, agents: Any) -> str:
+        if not isinstance(agents, dict):
+            return "No multi-agent data."
+        return (
+            "<div>"
+            f"enabled=<code>{escape(str(agents.get('enabled', False)))}</code> · "
+            f"active_parents=<code>{escape(str(agents.get('active_parents', 0)))}</code> · "
+            f"active_sub_agents=<code>{escape(str(agents.get('active_sub_agents', 0)))}</code>"
+            "</div>"
+            "<div>"
+            f"requests=<code>{escape(str(agents.get('subagent_requests', 0)))}</code> · "
+            "subagent_cost_usd="
+            f"<code>{escape(str(agents.get('subagent_estimated_cost_usd', 0.0)))}</code>"
+            "</div>"
+        )
 
     def _text_or_none(self, value: Any) -> str:
         text = str(value).strip() if value is not None else ""

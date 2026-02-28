@@ -34,6 +34,7 @@ from cue_agent.logging_utils import correlation_context, get_correlation_id, new
 from cue_agent.memory.session_memory import SessionMemory
 from cue_agent.memory.vector_memory import VectorMemory
 from cue_agent.notifications.manager import NotificationManager
+from cue_agent.orchestration.multi_agent import MultiAgentOrchestrator
 from cue_agent.security.approval_gate import ApprovalGate
 from cue_agent.security.risk_classifier import RiskClassifier
 from cue_agent.security.user_access import UserAccessStore, has_permission, is_approver
@@ -70,6 +71,21 @@ class CueApp:
         # --- Memory ---
         self.memory = SessionMemory(self.state_manager)
         self.vector_memory = VectorMemory(self.config)
+        self.multi_agent_orchestrator = MultiAgentOrchestrator(
+            brain=self.brain,
+            memory=self.memory,
+            max_concurrent=max(1, int(getattr(self.config, "multi_agent_max_concurrent", 3))),
+            default_timeout_seconds=max(
+                1,
+                int(getattr(self.config, "multi_agent_subagent_timeout_seconds", 120)),
+            ),
+            inherited_policies={
+                "require_approval": bool(getattr(self.config, "require_approval", True)),
+                "approval_required_levels": list(getattr(self.config, "approval_required_levels", [])),
+                "high_risk_tools": list(getattr(self.config, "high_risk_tools", [])),
+            },
+            total_cost_provider=self._router_total_cost_usd,
+        )
 
         # --- Actions ---
         self.actions = ActionRegistry(tool_event_handler=self._handle_tool_event)
@@ -147,6 +163,7 @@ class CueApp:
             approval_gate=self.approval_gate,
             config=self.config,
             notification_handler=self._handle_loop_event,
+            multi_agent_orchestrator=self.multi_agent_orchestrator,
         )
         self._queued_messages: list[dict[str, Any]] = []
         self._provider_outage_notified = False
@@ -162,6 +179,18 @@ class CueApp:
 
     def _setup_logging(self) -> None:
         setup_logging()
+
+    def _router_total_cost_usd(self) -> float:
+        summary = self.router.usage_summary()
+        if not isinstance(summary, dict):
+            return 0.0
+        value = summary.get("total_estimated_cost_usd", 0.0)
+        if not isinstance(value, (int, float, str)):
+            return 0.0
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _bootstrap_access_roles(self) -> None:
         admin_ids: list[str] = []
@@ -228,6 +257,8 @@ class CueApp:
             return "tasks.view"
         if command == "/usage":
             return "usage"
+        if command == "/agents":
+            return "status"
         if command == "/task":
             return "tasks.manage"
         if command == "/users":
@@ -447,6 +478,13 @@ class CueApp:
                 return UnifiedResponse(
                     text=self.router.usage_report_text(),
                     chat_id=msg.chat_id,
+                )
+
+            if command == "/agents":
+                return UnifiedResponse(
+                    text=self._agents_text(),
+                    chat_id=msg.chat_id,
+                    ui_mode="status",
                 )
 
             if command != "/task":
@@ -886,6 +924,7 @@ class CueApp:
         return (
             "Task commands:\n"
             "- /usage\n"
+            "- /agents\n"
             "- /status\n"
             "- /skills\n"
             "- /settings\n"
@@ -908,6 +947,7 @@ class CueApp:
             "*CueAgent Command Center*\n\n"
             "- `/help` Show this menu\n"
             "- `/status` Runtime health and queue summary\n"
+            "- `/agents` Multi-agent orchestration tree and usage\n"
             "- `/tasks [status|all]` Task queue view\n"
             "- `/tasks download` Download queue JSON export\n"
             "- `/audit [json|csv|markdown]` Export audit trail\n"
@@ -948,6 +988,43 @@ class CueApp:
             "- /market validate <path>"
         )
 
+    def _agents_text(self) -> str:
+        snapshot = self.multi_agent_orchestrator.status_snapshot()
+        parents = snapshot.get("parents", [])
+        if not isinstance(parents, list):
+            parents = []
+        lines = [
+            "*Multi-Agent Orchestration*",
+            f"- Enabled: `{getattr(self.config, 'multi_agent_enabled', True)}`",
+            f"- Max concurrent: `{snapshot.get('max_concurrent', 0)}`",
+            f"- Active parents: `{snapshot.get('active_parents', 0)}`",
+            f"- Active sub-agents: `{snapshot.get('active_sub_agents', 0)}`",
+            f"- Sub-agent requests: `{snapshot.get('subagent_requests', 0)}`",
+            f"- Sub-agent cost (USD): `${float(snapshot.get('subagent_estimated_cost_usd', 0.0)):.4f}`",
+        ]
+        if not parents:
+            lines.append("- Agent tree: none active")
+            return "\n".join(lines)
+
+        lines.append("- Agent tree:")
+        for parent in parents[:5]:
+            if not isinstance(parent, dict):
+                continue
+            parent_id = str(parent.get("parent_agent_id", "parent"))
+            parent_status = str(parent.get("status", "unknown"))
+            parent_task = str(parent.get("parent_task", ""))[:80]
+            lines.append(f"  - {parent_id} [{parent_status}] {parent_task}")
+            sub_agents = parent.get("sub_agents", [])
+            if not isinstance(sub_agents, list):
+                continue
+            for child in sub_agents[:6]:
+                if not isinstance(child, dict):
+                    continue
+                child_id = str(child.get("agent_id", "child"))
+                child_status = str(child.get("status", "unknown"))
+                lines.append(f"    - {child_id}: {child_status}")
+        return "\n".join(lines)
+
     def _status_text(self) -> str:
         status = self._build_health_status()
         providers = status.get("providers", {})
@@ -957,6 +1034,7 @@ class CueApp:
         memory = status.get("memory", {})
         telegram = status.get("telegram", {})
         access = status.get("access", {})
+        agents = status.get("agents", {})
 
         provider_line = ", ".join(f"{k}:{v}" for k, v in providers.items()) if isinstance(providers, dict) else "n/a"
         queue_stats = queue.get("task_queue", {}) if isinstance(queue, dict) else {}
@@ -982,11 +1060,41 @@ class CueApp:
                     f"user={counts.get('user', 0)} "
                     f"readonly={counts.get('readonly', 0)}"
                 )
+        agent_line = "n/a"
+        agent_tree_line = "none"
+        if isinstance(agents, dict):
+            agent_line = (
+                f"enabled={agents.get('enabled', False)} "
+                f"active_parents={agents.get('active_parents', 0)} "
+                f"active_sub_agents={agents.get('active_sub_agents', 0)} "
+                f"cost=${float(agents.get('subagent_estimated_cost_usd', 0.0)):.4f}"
+            )
+            parent_rows = agents.get("parents", [])
+            if isinstance(parent_rows, list) and parent_rows:
+                formatted: list[str] = []
+                for parent in parent_rows[:3]:
+                    if not isinstance(parent, dict):
+                        continue
+                    parent_id = str(parent.get("parent_agent_id", "parent"))
+                    parent_status = str(parent.get("status", "unknown"))
+                    sub_agents = parent.get("sub_agents", [])
+                    running_count = 0
+                    if isinstance(sub_agents, list):
+                        running_count = sum(
+                            1
+                            for child in sub_agents
+                            if isinstance(child, dict) and str(child.get("status", "")) == "running"
+                        )
+                    formatted.append(f"{parent_id}:{parent_status}/running={running_count}")
+                if formatted:
+                    agent_tree_line = ", ".join(formatted)
         return (
             "*CueAgent Status*\n"
             f"- Time (UTC): `{status.get('timestamp_utc', 'n/a')}`\n"
             f"- Loop: `enabled={loop.get('enabled', False)}` `running={loop.get('running', False)}`\n"
             f"- Providers: {provider_line}\n"
+            f"- Multi-agent: `{agent_line}`\n"
+            f"- Agent tree: `{agent_tree_line}`\n"
             f"- Telegram webhook: `{webhook_line}`\n"
             f"- Access: `{users_line}`\n"
             f"- Queue: {queue_line}\n"
@@ -1013,6 +1121,9 @@ class CueApp:
             "*Settings Snapshot*\n"
             f"- Loop enabled: `{self.config.loop_enabled}` interval=`{self.config.loop_interval_seconds}s`\n"
             f"- Task queue: `{self.config.task_queue_enabled}` max_list=`{self.config.task_queue_max_list}`\n"
+            f"- Multi-agent: `{getattr(self.config, 'multi_agent_enabled', True)}` "
+            f"max_concurrent=`{getattr(self.config, 'multi_agent_max_concurrent', 3)}` "
+            f"timeout=`{getattr(self.config, 'multi_agent_subagent_timeout_seconds', 120)}s`\n"
             f"- Approval required: `{self.config.require_approval}` levels=`{self.config.approval_required_levels}`\n"
             f"- Notifications: `enabled={self.config.notifications_enabled}` "
             f"`mode={self.config.notification_delivery_mode}`\n"
@@ -1547,6 +1658,7 @@ class CueApp:
                 "vector_enabled": self.config.vector_memory_enabled,
                 "vector_available": self.vector_memory.is_available,
             },
+            "agents": self.multi_agent_orchestrator.status_snapshot(),
             "telegram": telegram_diag,
             "access": {
                 "multi_user_enabled": multi_user_enabled,
@@ -1576,6 +1688,7 @@ class CueApp:
             "providers": health.get("providers", {}),
             "provider_metrics": provider_metrics,
             "queue": queue,
+            "agents": health.get("agents", {}),
             "telegram": health.get("telegram", {}),
             "access": health.get("access", {}),
             "tasks": tasks,
@@ -1583,6 +1696,7 @@ class CueApp:
             "config": {
                 "loop_enabled": self.config.loop_enabled,
                 "task_queue_enabled": self.config.task_queue_enabled,
+                "multi_agent_enabled": getattr(self.config, "multi_agent_enabled", True),
                 "notifications_enabled": self.config.notifications_enabled,
                 "notification_mode": self.config.notification_delivery_mode,
                 "dashboard_enabled": self.config.dashboard_enabled,
