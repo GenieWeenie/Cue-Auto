@@ -35,6 +35,20 @@ def test_main_check_config_exits_with_report_code(monkeypatch, capsys):
     assert "fake diagnostics" in output
 
 
+def test_main_check_config_exits_1_when_diagnostics_fail(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cue-agent", "--check-config"])
+    monkeypatch.setattr(
+        "cue_agent.config_diagnostics.run_config_diagnostics",
+        lambda config: _FakeReport(exit_code=1),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_module.main()
+
+    assert exc.value.code == 1
+    assert "fake diagnostics" in capsys.readouterr().out
+
+
 def test_main_export_audit_to_stdout(monkeypatch, capsys, tmp_path: Path):
     monkeypatch.setenv("CUE_STATE_DB_PATH", str(tmp_path / "state.db"))
     monkeypatch.setattr(sys, "argv", ["cue-agent", "--export-audit-format", "json", "--audit-limit", "5"])
@@ -174,6 +188,26 @@ def test_main_marketplace_search(monkeypatch, capsys, tmp_path: Path):
 
     output = capsys.readouterr().out
     assert "demo_skill@1.0.0" in output
+
+
+def test_main_marketplace_search_empty(monkeypatch, capsys, tmp_path: Path):
+    """Search with no matches prints message and returns."""
+    index_path = tmp_path / "index.json"
+    index_path.write_text(json.dumps({"skills": []}, indent=2), encoding="utf-8")
+    packages_dir = tmp_path / "packages"
+    packages_dir.mkdir()
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    state_path = tmp_path / "state.json"
+    monkeypatch.setenv("CUE_SKILLS_REGISTRY_INDEX_PATH", str(index_path))
+    monkeypatch.setenv("CUE_SKILLS_REGISTRY_PACKAGES_DIR", str(packages_dir))
+    monkeypatch.setenv("CUE_SKILLS_DIR", str(skills_dir))
+    monkeypatch.setenv("CUE_SKILLS_REGISTRY_STATE_PATH", str(state_path))
+    monkeypatch.setattr(sys, "argv", ["cue-agent", "marketplace", "search", "nonexistent"])
+
+    main_module.main()
+
+    assert "No marketplace skills found" in capsys.readouterr().out
 
 
 def test_main_marketplace_install(monkeypatch, capsys, tmp_path: Path):
