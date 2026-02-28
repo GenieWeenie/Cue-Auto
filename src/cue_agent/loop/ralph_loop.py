@@ -346,10 +346,12 @@ class RalphLoop:
 
         max_concurrent = max(1, int(getattr(self.config, "multi_agent_max_concurrent", 3)))
         timeout_seconds = max(1, int(getattr(self.config, "multi_agent_subagent_timeout_seconds", 120)))
-        provider_preference = str(
-            getattr(self.config, "multi_agent_default_provider_preference", "auto")
-        ).strip() or "auto"
-        children = self.task_queue.list_child_tasks(parent_task_id=selected_task_id, status=TASK_STATUS_PENDING, limit=50)
+        provider_preference = (
+            str(getattr(self.config, "multi_agent_default_provider_preference", "auto")).strip() or "auto"
+        )
+        children = self.task_queue.list_child_tasks(
+            parent_task_id=selected_task_id, status=TASK_STATUS_PENDING, limit=50
+        )
         if not children:
             return ""
 

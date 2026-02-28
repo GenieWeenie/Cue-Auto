@@ -178,7 +178,12 @@ class MultiAgentOrchestrator:
         return False
 
     def status_snapshot(self) -> dict[str, Any]:
-        active_sub_agents = sum(1 for parent in self._active_parents.values() for child in parent.children.values() if child.status == SUB_AGENT_STATUS_RUNNING)
+        active_sub_agents = sum(
+            1
+            for parent in self._active_parents.values()
+            for child in parent.children.values()
+            if child.status == SUB_AGENT_STATUS_RUNNING
+        )
         return {
             "enabled": True,
             "max_concurrent": self._max_concurrent,
