@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import signal
+import time
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -15,6 +16,7 @@ from environment.executor import AsyncLocalExecutor
 from protocol.state_manager import StateManager
 
 from cue_agent.actions.registry import ActionRegistry
+from cue_agent.audit import AuditQuery, AuditTrail
 from cue_agent.brain.cue_brain import CueBrain
 from cue_agent.brain.llm_router import LLMAllProvidersDownError, LLMRouter
 from cue_agent.brain.soul_loader import SoulLoader
@@ -23,7 +25,7 @@ from cue_agent.comms.models import UnifiedMessage, UnifiedResponse
 from cue_agent.comms.telegram_gateway import TelegramGateway
 from cue_agent.config import CueConfig
 from cue_agent.heartbeat.scheduler import Heartbeat
-from cue_agent.heartbeat.tasks import consolidate_vector_memory, daily_summary, health_check
+from cue_agent.heartbeat.tasks import cleanup_audit_trail, consolidate_vector_memory, daily_summary, health_check
 from cue_agent.health.server import HealthServer
 from cue_agent.loop.ralph_loop import RalphLoop
 from cue_agent.loop.task_queue import TaskQueue
@@ -52,6 +54,7 @@ class CueApp:
         # --- Memory (EAP StateManager) ---
         self.state_manager = StateManager(db_path=self.config.state_db_path)
         self.task_queue = TaskQueue(db_path=self.config.state_db_path)
+        self.audit_trail = AuditTrail(db_path=self.config.state_db_path)
 
         # --- Brain ---
         self.soul_loader = SoulLoader(self.config.soul_md_path)
@@ -153,6 +156,19 @@ class CueApp:
             with correlation_context(new_correlation_id("tg")):
                 return await self._handle_message(msg)
 
+        self._record_audit_event(
+            event_type="conversation",
+            action="user_message",
+            outcome="received",
+            chat_id=msg.chat_id,
+            details={
+                "platform": msg.platform,
+                "user_id": msg.user_id,
+                "username": msg.username,
+                "text_preview": msg.text[:240],
+            },
+        )
+
         command_response = self._handle_commands(msg)
         if command_response is not None:
             return command_response
@@ -163,9 +179,19 @@ class CueApp:
         vector_context = self.vector_memory.recall_as_context(msg.chat_id, msg.text)
         if vector_context:
             context = f"{context}\n\n{vector_context}" if context else vector_context
+        llm_started = time.monotonic()
         try:
             response_text = self.brain.chat(msg.text, extra_context=context)
             self._provider_outage_notified = False
+            self._record_audit_event(
+                event_type="llm_call",
+                action="chat_completion",
+                risk_level="low",
+                outcome="success",
+                chat_id=msg.chat_id,
+                duration_ms=int((time.monotonic() - llm_started) * 1000),
+                details={"queued_messages": len(self._queued_messages)},
+            )
         except LLMAllProvidersDownError as exc:
             self._queued_messages.append(
                 {
@@ -186,13 +212,40 @@ class CueApp:
             if self.telegram and not self._provider_outage_notified:
                 await self._notify_provider_outage(exc.provider_status)
                 self._provider_outage_notified = True
+            self._record_audit_event(
+                event_type="llm_call",
+                action="chat_completion",
+                risk_level="high",
+                outcome="provider_outage",
+                chat_id=msg.chat_id,
+                duration_ms=int((time.monotonic() - llm_started) * 1000),
+                details={"provider_status": exc.provider_status},
+            )
             response_text = (
                 "All LLM providers are temporarily unavailable. "
                 "Your message has been queued and the admin has been notified."
             )
+        except Exception as exc:
+            self._record_audit_event(
+                event_type="error",
+                action="chat_completion",
+                risk_level="high",
+                outcome="error",
+                chat_id=msg.chat_id,
+                duration_ms=int((time.monotonic() - llm_started) * 1000),
+                details={"error": str(exc)},
+            )
+            raise
 
         self.memory.add_turn(msg.chat_id, "assistant", response_text)
         self.vector_memory.add_turn(msg.chat_id, "assistant", response_text)
+        self._record_audit_event(
+            event_type="conversation",
+            action="assistant_message",
+            outcome="sent",
+            chat_id=msg.chat_id,
+            details={"text_preview": response_text[:240]},
+        )
         return UnifiedResponse(text=response_text, chat_id=msg.chat_id)
 
     def _handle_commands(self, msg: UnifiedMessage) -> UnifiedResponse | None:
@@ -221,6 +274,9 @@ class CueApp:
 
             if command == "/file":
                 return UnifiedResponse(text=self._file_upload_text(msg), chat_id=msg.chat_id)
+
+            if command == "/audit":
+                return self._handle_audit_command(msg, parts[1:])
 
             if command == "/tasks":
                 mode = parts[1].lower() if len(parts) > 1 else ""
@@ -343,6 +399,103 @@ class CueApp:
             lines.append(f"- #{task_id} [{status}] p{priority} {title}{suffix}")
         return "\n".join(lines)
 
+    def _handle_audit_command(self, msg: UnifiedMessage, args: list[str]) -> UnifiedResponse:
+        export_format = "markdown"
+        event: str | None = None
+        action: str | None = None
+        risk: str | None = None
+        outcome: str | None = None
+        approval: str | None = None
+        start_utc: str | None = None
+        end_utc: str | None = None
+        limit = 200
+
+        try:
+            for token in args:
+                lowered = token.strip().lower()
+                if not lowered:
+                    continue
+                if lowered in {"json", "csv", "markdown", "md"}:
+                    export_format = lowered
+                    continue
+                if lowered.isdigit():
+                    limit = int(lowered)
+                    continue
+                if "=" not in token:
+                    raise ValueError(f"Unrecognized audit option: {token}")
+
+                key, value = token.split("=", 1)
+                key = key.strip().lower()
+                value = value.strip()
+                if not value:
+                    continue
+                if key == "event":
+                    event = value
+                elif key == "action":
+                    action = value
+                elif key == "risk":
+                    risk = value
+                elif key == "outcome":
+                    outcome = value
+                elif key == "approval":
+                    approval = value
+                elif key in {"start", "from"}:
+                    start_utc = value
+                elif key in {"end", "to"}:
+                    end_utc = value
+                elif key == "limit":
+                    limit = int(value)
+                else:
+                    raise ValueError(f"Unsupported audit filter: {key}")
+        except ValueError as exc:
+            return UnifiedResponse(
+                text=f"Audit command error: {exc}\n\n{self._audit_help_text()}",
+                chat_id=msg.chat_id,
+            )
+
+        query = AuditQuery(
+            start_utc=start_utc,
+            end_utc=end_utc,
+            event=event,
+            action=action,
+            risk=risk,
+            outcome=outcome,
+            approval=approval,
+            limit=limit,
+        )
+        try:
+            rows = self.audit_trail.query(query)
+            filename, payload, _mime = AuditTrail.export_records(rows, export_format)
+        except ValueError as exc:
+            return UnifiedResponse(text=f"Audit command error: {exc}", chat_id=msg.chat_id)
+
+        self._record_audit_event(
+            event_type="audit_export",
+            action=f"telegram_export_{export_format}",
+            risk_level=risk or "",
+            outcome="success",
+            chat_id=msg.chat_id,
+            details={
+                "rows": len(rows),
+                "filters": {
+                    "event": event,
+                    "action": action,
+                    "risk": risk,
+                    "outcome": outcome,
+                    "approval": approval,
+                    "start_utc": start_utc,
+                    "end_utc": end_utc,
+                    "limit": limit,
+                },
+            },
+        )
+        return UnifiedResponse(
+            text=f"Exported {len(rows)} audit record(s) as {export_format}.",
+            chat_id=msg.chat_id,
+            document_filename=filename,
+            document_bytes=payload,
+        )
+
     def _task_help_text(self) -> str:
         return (
             "Task commands:\n"
@@ -351,6 +504,7 @@ class CueApp:
             "- /skills\n"
             "- /settings\n"
             "- /approve\n"
+            "- /audit [json|csv|markdown] [event=...] [risk=...] [outcome=...] [start=YYYY-MM-DD] [end=YYYY-MM-DD]\n"
             "- /tasks [status|all]\n"
             "- /tasks download\n"
             "- /task add [p1|p2|p3|p4] <title>\n"
@@ -367,10 +521,19 @@ class CueApp:
             "- `/status` Runtime health and queue summary\n"
             "- `/tasks [status|all]` Task queue view\n"
             "- `/tasks download` Download queue JSON export\n"
+            "- `/audit [json|csv|markdown]` Export audit trail\n"
             "- `/skills` Loaded skills and tool counts\n"
             "- `/usage` Provider usage and spend\n"
             "- `/approve` Pending approval requests\n"
             "- `/settings` Runtime settings snapshot"
+        )
+
+    @staticmethod
+    def _audit_help_text() -> str:
+        return (
+            "Usage: /audit [json|csv|markdown] [limit] "
+            "[event=...] [action=...] [risk=...] [approval=...] [outcome=...] "
+            "[start=YYYY-MM-DD] [end=YYYY-MM-DD]"
         )
 
     def _status_text(self) -> str:
@@ -418,7 +581,9 @@ class CueApp:
             f"`mode={self.config.notification_delivery_mode}`\n"
             f"- Quiet hours: `{self.config.notification_quiet_hours_start}:00-{self.config.notification_quiet_hours_end}:00` "
             f"{self.config.notification_timezone}\n"
-            f"- Search provider: `{self.config.search_provider}`"
+            f"- Search provider: `{self.config.search_provider}`\n"
+            f"- Audit retention: `{self.config.audit_retention_days}` days "
+            f"(`{self.config.audit_cleanup_cron}`)"
         )
 
     def _approve_text(self) -> str:
@@ -485,6 +650,18 @@ class CueApp:
                 "arguments": arguments if isinstance(arguments, dict) else {},
             }
         )
+        self._record_audit_event(
+            event_type="tool_execution",
+            action=tool_name,
+            risk_level=risk_level,
+            approval_state="required" if risk_level in {"high", "critical"} else "not_required",
+            outcome=str(event.get("outcome", "unknown")),
+            duration_ms=int(event.get("duration_ms", 0) or 0),
+            details={
+                "summary": summary[:240],
+                "arguments": arguments if isinstance(arguments, dict) else {},
+            },
+        )
 
     def _append_timeline_event(self, entry: dict[str, Any]) -> None:
         row = dict(entry)
@@ -493,6 +670,36 @@ class CueApp:
         overflow = len(self._action_timeline) - self._timeline_limit
         if overflow > 0:
             del self._action_timeline[:overflow]
+
+    def _record_audit_event(
+        self,
+        *,
+        event_type: str,
+        action: str,
+        risk_level: str = "",
+        approval_state: str = "",
+        outcome: str = "",
+        chat_id: str = "",
+        run_id: str = "",
+        duration_ms: int = 0,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        correlation_id = get_correlation_id() or "-"
+        try:
+            self.audit_trail.record_event(
+                event_type=event_type,
+                action=action,
+                correlation_id=correlation_id,
+                risk_level=risk_level,
+                approval_state=approval_state,
+                outcome=outcome,
+                chat_id=chat_id,
+                run_id=run_id,
+                duration_ms=duration_ms,
+                details=details,
+            )
+        except Exception:
+            logger.exception("Failed to record audit event", extra={"event": "audit_record_error"})
 
     def _notify_event(self, *, category: str, priority: str, title: str, body: str, metadata: dict[str, Any]) -> None:
         if self.notification_manager is None:
@@ -517,6 +724,13 @@ class CueApp:
                     "outcome": event_name,
                     "summary": str(event.get("provider", "budget event")),
                 }
+            )
+            self._record_audit_event(
+                event_type="llm_router",
+                action=event_name,
+                risk_level="high" if event_name == "llm_budget_warning" else "critical",
+                outcome=event_name,
+                details={"event": event},
             )
         if event_name == "llm_budget_warning":
             spend = float(event.get("monthly_spend_usd", 0.0))
@@ -553,6 +767,14 @@ class CueApp:
                 "summary": str(event.get("reason", "approval required"))[:240],
             }
         )
+        self._record_audit_event(
+            event_type="approval",
+            action=str(event.get("tool_name", "unknown")),
+            risk_level=risk_level,
+            approval_state="required",
+            outcome="pending",
+            details={"reason": str(event.get("reason", ""))[:240]},
+        )
         priority = "critical" if risk_level == "critical" else "high"
         tool_name = str(event.get("tool_name", "unknown"))
         reason = str(event.get("reason", "approval required"))
@@ -579,6 +801,13 @@ class CueApp:
                 "summary": f"{title}: {body}"[:240],
             }
         )
+        self._record_audit_event(
+            event_type="loop_event",
+            action=category,
+            risk_level=priority,
+            outcome=category,
+            details={"title": title, "body": body[:240]},
+        )
         self._notify_event(
             category=category,
             priority=priority,
@@ -604,6 +833,13 @@ class CueApp:
 
     async def _handle_approval(self, approval_id: str, approved: bool) -> None:
         """Route Telegram approval callbacks to the approval gateway."""
+        self._record_audit_event(
+            event_type="approval",
+            action=approval_id,
+            risk_level="high",
+            approval_state="approved" if approved else "rejected",
+            outcome="handled",
+        )
         if self.approval_gateway:
             await self.approval_gateway.handle_callback(approval_id, approved)
 
@@ -691,6 +927,16 @@ class CueApp:
                     max_items=self.config.vector_memory_consolidation_max_items,
                 ),
                 self.config.vector_memory_consolidation_cron,
+            )
+        if self.config.heartbeat_enabled and self.config.audit_retention_days > 0:
+            await self.heartbeat.add_cron_task(
+                "audit_retention_cleanup",
+                partial(
+                    cleanup_audit_trail,
+                    audit_trail=self.audit_trail,
+                    retention_days=self.config.audit_retention_days,
+                ),
+                self.config.audit_cleanup_cron,
             )
 
         # Start skill watcher for hot-reload

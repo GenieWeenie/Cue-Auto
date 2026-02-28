@@ -20,6 +20,7 @@ def test_default_config():
     assert config.notifications_enabled is True
     assert config.notification_delivery_mode == "immediate"
     assert config.dashboard_enabled is False
+    assert config.audit_retention_days == 30
 
 
 def test_has_provider_flags():

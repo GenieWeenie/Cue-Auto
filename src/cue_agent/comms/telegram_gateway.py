@@ -37,6 +37,7 @@ _COMMAND_HELP: list[tuple[str, str]] = [
     ("usage", "LLM usage and spend"),
     ("approve", "Pending approvals"),
     ("settings", "Current runtime settings"),
+    ("audit", "Export audit trail"),
 ]
 
 _CALLBACK_TO_COMMAND: dict[str, str] = {
@@ -73,6 +74,7 @@ class TelegramGateway:
         self.app.add_handler(CommandHandler("usage", self._handle_command_message))
         self.app.add_handler(CommandHandler("approve", self._handle_command_message))
         self.app.add_handler(CommandHandler("settings", self._handle_command_message))
+        self.app.add_handler(CommandHandler("audit", self._handle_command_message))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
         self.app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, self._handle_message))
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))

@@ -119,6 +119,10 @@ class CueConfig(BaseSettings):
     circuit_breaker_failures: int = 3
     circuit_breaker_cooldown_seconds: int = 300
 
+    # --- Audit Trail ---
+    audit_retention_days: int = 30
+    audit_cleanup_cron: str = "15 3 * * *"
+
     @property
     def has_openai(self) -> bool:
         return bool(self.openai_api_key)

@@ -119,3 +119,24 @@ async def consolidate_vector_memory(
             **summary,
         },
     )
+
+
+async def cleanup_audit_trail(
+    audit_trail: Any,
+    *,
+    retention_days: int,
+) -> None:
+    """Delete audit rows older than configured retention."""
+    if retention_days <= 0:
+        logger.info("Skipping audit cleanup; retention disabled")
+        return
+
+    deleted = audit_trail.cleanup_older_than(retention_days)
+    logger.info(
+        "Audit retention cleanup complete",
+        extra={
+            "event": "audit_retention_cleanup_complete",
+            "retention_days": retention_days,
+            "deleted_rows": deleted,
+        },
+    )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -31,3 +32,36 @@ def test_main_check_config_exits_with_report_code(monkeypatch, capsys):
     assert exc.value.code == 0
     output = capsys.readouterr().out
     assert "fake diagnostics" in output
+
+
+def test_main_export_audit_to_stdout(monkeypatch, capsys, tmp_path: Path):
+    monkeypatch.setenv("CUE_STATE_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setattr(sys, "argv", ["cue-agent", "--export-audit-format", "json", "--audit-limit", "5"])
+
+    main_module.main()
+
+    output = capsys.readouterr().out
+    assert "generated_at_utc" in output
+    assert "exported" in output.lower()
+
+
+def test_main_export_audit_to_file(monkeypatch, capsys, tmp_path: Path):
+    output_path = tmp_path / "audit.md"
+    monkeypatch.setenv("CUE_STATE_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cue-agent",
+            "--export-audit-format",
+            "markdown",
+            "--audit-output",
+            str(output_path),
+        ],
+    )
+
+    main_module.main()
+
+    assert output_path.exists()
+    assert "CueAgent Audit Export" in output_path.read_text(encoding="utf-8")
+    assert "Exported" in capsys.readouterr().out

@@ -196,4 +196,5 @@ async def test_start_polling_sets_command_menu(monkeypatch):
     gateway = TelegramGateway(CueConfig(telegram_bot_token="token"), _on_message)
     await gateway.start_polling()
     assert any(command.command == "status" for command in gateway.app.bot.commands)
+    assert any(command.command == "audit" for command in gateway.app.bot.commands)
     await gateway.stop()

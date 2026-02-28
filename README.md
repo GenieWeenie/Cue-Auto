@@ -222,7 +222,7 @@ For full production instructions (Docker, systemd, Railway/Fly.io/DigitalOcean),
 python -m cue_agent --mode polling
 ```
 
-Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
+Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`, `/audit`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
 
 ### Autonomous Loop
 
@@ -266,6 +266,7 @@ Use these in Telegram chat:
 - `/settings` — runtime settings snapshot
 - `/approve` — pending approval queue
 - `/usage` — monthly provider usage, estimated spend, and budget thresholds
+- `/audit json|csv|markdown [event=...] [risk=...] [outcome=...] [start=YYYY-MM-DD] [end=YYYY-MM-DD]` — export filtered audit trail
 - `/tasks` — list queued tasks
 - `/tasks pending|blocked|in_progress|failed|done|all`
 - `/tasks download|export|json` — export tasks as a JSON attachment
@@ -276,6 +277,24 @@ Use these in Telegram chat:
 - `/task retry <task_id>`
 
 Upload files directly in Telegram to attach context; attachment metadata is normalized and routed through the unified message layer.
+
+### CLI Audit Export
+
+Export audit trail data directly from CLI:
+
+```bash
+# Print JSON to stdout
+cue-agent --export-audit-format json --audit-limit 200
+
+# Write Markdown export to file with filters
+cue-agent --export-audit-format markdown \
+  --audit-output ./data/audit.md \
+  --audit-event tool_execution \
+  --audit-risk high \
+  --audit-outcome error \
+  --audit-start 2026-02-01 \
+  --audit-end 2026-02-28
+```
 
 ### Notification Delivery
 
@@ -442,6 +461,8 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 | `CUE_DASHBOARD_USERNAME` | `admin` | Basic auth username for dashboard routes |
 | `CUE_DASHBOARD_PASSWORD` | `change-me` | Basic auth password for dashboard routes |
 | `CUE_DASHBOARD_TIMELINE_LIMIT` | `200` | Max in-memory action timeline entries |
+| `CUE_AUDIT_RETENTION_DAYS` | `30` | Days to keep audit records before cleanup |
+| `CUE_AUDIT_CLEANUP_CRON` | `15 3 * * *` | Daily cron for audit retention cleanup |
 
 ## License
 

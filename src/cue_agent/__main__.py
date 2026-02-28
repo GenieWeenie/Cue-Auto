@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 
 
 def main() -> None:
@@ -21,7 +22,53 @@ def main() -> None:
         action="store_true",
         help="Validate configuration and exit",
     )
+    parser.add_argument(
+        "--export-audit-format",
+        choices=["json", "csv", "markdown"],
+        help="Export audit trail and exit",
+    )
+    parser.add_argument(
+        "--audit-output",
+        default="",
+        help="Output file path for audit export (defaults to stdout)",
+    )
+    parser.add_argument("--audit-limit", type=int, default=200, help="Max audit rows to export")
+    parser.add_argument("--audit-event", default="", help="Filter audit event type")
+    parser.add_argument("--audit-action", default="", help="Filter audit action")
+    parser.add_argument("--audit-risk", default="", help="Filter audit risk level")
+    parser.add_argument("--audit-outcome", default="", help="Filter audit outcome")
+    parser.add_argument("--audit-approval", default="", help="Filter audit approval state")
+    parser.add_argument("--audit-start", default="", help="Audit start time/date (ISO or YYYY-MM-DD)")
+    parser.add_argument("--audit-end", default="", help="Audit end time/date (ISO or YYYY-MM-DD)")
     args = parser.parse_args()
+
+    if args.export_audit_format:
+        from cue_agent.audit import AuditQuery, AuditTrail
+        from cue_agent.config import CueConfig
+
+        config = CueConfig()
+        trail = AuditTrail(config.state_db_path)
+        query = AuditQuery(
+            start_utc=args.audit_start or None,
+            end_utc=args.audit_end or None,
+            event=args.audit_event or None,
+            action=args.audit_action or None,
+            risk=args.audit_risk or None,
+            outcome=args.audit_outcome or None,
+            approval=args.audit_approval or None,
+            limit=max(1, args.audit_limit),
+        )
+        rows = trail.query(query)
+        filename, payload, _mime = trail.export_records(rows, args.export_audit_format)
+        if args.audit_output:
+            output_path = Path(args.audit_output).expanduser()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(payload)
+            print(f"Exported {len(rows)} audit record(s) to {output_path}")
+        else:
+            print(payload.decode("utf-8"))
+            print(f"\n[exported {len(rows)} record(s) as {filename}]")
+        return
 
     if args.check_config:
         from cue_agent.config import CueConfig

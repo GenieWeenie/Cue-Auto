@@ -47,6 +47,10 @@ Optional web dashboard:
 - Protect with `CUE_DASHBOARD_USERNAME` + `CUE_DASHBOARD_PASSWORD`
 - Access at `http://localhost:8080/dashboard`
 
+Audit retention:
+
+- Configure `CUE_AUDIT_RETENTION_DAYS` and `CUE_AUDIT_CLEANUP_CRON` for daily cleanup of old audit rows.
+
 ### Persistence
 
 `docker-compose.yml` mounts:

@@ -8,7 +8,7 @@ import pytest
 
 from cue_agent.config import CueConfig
 from cue_agent.heartbeat.scheduler import Heartbeat
-from cue_agent.heartbeat.tasks import consolidate_vector_memory, daily_summary, health_check
+from cue_agent.heartbeat.tasks import cleanup_audit_trail, consolidate_vector_memory, daily_summary, health_check
 
 
 class _FakeScheduler:
@@ -244,3 +244,27 @@ async def test_vector_memory_consolidation_invokes_summarizer():
     assert vm.called_with["max_items"] == 50
     assert len(brain.prompts) == 1
     assert "Memories:" in brain.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_audit_trail_deletes_old_rows():
+    class _FakeAuditTrail:
+        def __init__(self):
+            self.days: list[int] = []
+
+        def cleanup_older_than(self, days: int) -> int:
+            self.days.append(days)
+            return 7
+
+    audit = _FakeAuditTrail()
+    await cleanup_audit_trail(audit, retention_days=30)
+    assert audit.days == [30]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_audit_trail_skips_when_disabled():
+    class _FakeAuditTrail:
+        def cleanup_older_than(self, days: int) -> int:  # noqa: ARG002
+            raise AssertionError("should not run")
+
+    await cleanup_audit_trail(_FakeAuditTrail(), retention_days=0)

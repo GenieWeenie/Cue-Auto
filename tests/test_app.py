@@ -102,6 +102,8 @@ def _install_fakes(
             self.dashboard_username = "admin"
             self.dashboard_password = "change-me"
             self.dashboard_timeline_limit = 200
+            self.audit_retention_days = 30
+            self.audit_cleanup_cron = "15 3 * * *"
             self.retry_tool_attempts = 3
             self.retry_telegram_attempts = 5
             self.retry_llm_attempts = 3
@@ -569,6 +571,15 @@ async def test_app_task_commands(monkeypatch):
     assert download_response.document_filename == "cue-agent-tasks.json"
     assert download_response.document_bytes is not None
 
+    audit_msg = UnifiedMessage(
+        platform="telegram", chat_id="chat-1", user_id="u1", text="/audit json event=conversation"
+    )
+    audit_response = await app._handle_message(audit_msg)
+    assert "Exported" in audit_response.text
+    assert audit_response.document_filename is not None
+    assert audit_response.document_filename.endswith(".json")
+    assert audit_response.document_bytes is not None
+
     file_msg = UnifiedMessage(
         platform="telegram",
         chat_id="chat-1",
@@ -643,7 +654,7 @@ async def test_app_start_once_with_heartbeat_and_hot_reload(monkeypatch):
     await app.start(mode="once")
 
     assert t.heartbeat_start == 1
-    assert t.heartbeat_crons == ["daily_summary", "health_check", "notification_digest"]
+    assert t.heartbeat_crons == ["daily_summary", "health_check", "notification_digest", "audit_retention_cleanup"]
     assert t.loop_run_once == 1
     assert t.watcher_stop == 1
     assert t.loop_stop == 1
@@ -665,7 +676,7 @@ async def test_app_start_schedules_vector_consolidation(monkeypatch):
     await app.start(mode="once")
 
     assert t.heartbeat_start == 1
-    assert t.heartbeat_crons == ["vector_memory_consolidation"]
+    assert t.heartbeat_crons == ["vector_memory_consolidation", "audit_retention_cleanup"]
 
 
 @pytest.mark.asyncio
