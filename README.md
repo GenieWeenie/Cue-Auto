@@ -64,6 +64,8 @@ CueAgent is organized into 6 blocks, all wired together by the `CueApp` orchestr
 
 See [docs/security.md](docs/security.md) for operational security, RBAC, and approval flows.
 
+**Secrets:** Never commit `.env`; rotate API and Telegram keys periodically. See [docs/deployment.md](docs/deployment.md) for rotation and runbooks.
+
 ### Heartbeat
 
 - **Scheduler** — APScheduler async cron for recurring tasks.
@@ -141,7 +143,8 @@ Cue-Auto/
 ├── SOUL.md                    # Agent identity and personality
 ├── .env.example               # All configuration variables
 ├── .env.production.example    # Production-ready Docker/systemd template
-├── docs/deployment.md         # Docker, systemd, and cloud deployment guide
+├── docs/                      # deployment, security, architecture, observability, skills-sdk, REVIEW_AND_NEXT_ROADMAP
+│   └── deployment.md          # Docker, systemd, and cloud deployment guide
 └── pyproject.toml
 ```
 

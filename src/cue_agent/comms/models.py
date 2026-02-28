@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class UnifiedMessage(BaseModel):
@@ -16,7 +20,7 @@ class UnifiedMessage(BaseModel):
     user_id: str
     username: str = ""
     text: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_utc_now)
     raw: dict[str, Any] = Field(default_factory=dict)
     reply_to_message_id: str | None = None
 

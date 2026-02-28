@@ -4,6 +4,12 @@ This document summarizes a review of the repository (code, docs, and GitHub pres
 
 ---
 
+## Completed
+
+The items below have been addressed. For the detailed checklist (GEN-103–GEN-120) see [ROADMAP_DETAILED.md](ROADMAP_DETAILED.md); for version history see [CHANGELOG.md](CHANGELOG.md). Phase 2 work is tracked in Linear (CueAgent Roadmap, issues GEN-121+).
+
+---
+
 ## 1. GitHub & repo review summary
 
 ### What’s in good shape
