@@ -53,6 +53,8 @@ class NotificationManager:
         self._now_provider = now_provider or datetime.now
         self._delivery_mode = config.notification_delivery_mode.strip().lower()
         self._priority_threshold = self._normalize_priority(config.notification_priority_threshold)
+        raw = (config.notification_categories_disabled or "").strip()
+        self._disabled_categories: set[str] = {s.strip().lower() for s in raw.split(",") if s.strip()} if raw else set()
         self._quiet_start = int(config.notification_quiet_hours_start) % 24
         self._quiet_end = int(config.notification_quiet_hours_end) % 24
         self._tz = self._resolve_timezone(config.notification_timezone)
@@ -103,6 +105,9 @@ class NotificationManager:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         if not self._config.notifications_enabled:
+            return
+        if category.strip().lower() in self._disabled_categories:
+            logger.debug("Notification skipped (category disabled): %s", category)
             return
         normalized_priority = self._normalize_priority(priority)
         if not self._passes_threshold(normalized_priority):

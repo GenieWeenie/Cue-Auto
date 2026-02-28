@@ -127,3 +127,64 @@ async def test_priority_threshold_filters_low_events():
     assert sent == 1
     assert len(bot.sent) == 1
     assert "Outage" in bot.sent[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_category_not_queued_nor_sent():
+    """Events in notification_categories_disabled are not queued and send_message is not called."""
+    bot = _FakeBot()
+    manager = NotificationManager(
+        CueConfig(
+            notifications_enabled=True,
+            notification_delivery_mode="immediate",
+            notification_priority_threshold="low",
+            notification_quiet_hours_start=22,
+            notification_quiet_hours_end=7,
+            notification_timezone="UTC",
+            notification_categories_disabled="task_completion",
+        ),
+        bot=bot,
+        admin_chat_id=42,
+        now_provider=_make_now(12),
+    )
+    manager.emit(
+        category="task_completion",
+        priority="high",
+        title="Task complete",
+        body="Should not send",
+    )
+    assert manager.queue_size() == 0
+    sent = await manager.flush(batched=False)
+    assert sent == 0
+    assert len(bot.sent) == 0
+
+
+@pytest.mark.asyncio
+async def test_disabled_category_other_category_still_delivered():
+    """Events in a non-disabled category are still queued and delivered."""
+    bot = _FakeBot()
+    manager = NotificationManager(
+        CueConfig(
+            notifications_enabled=True,
+            notification_delivery_mode="immediate",
+            notification_priority_threshold="low",
+            notification_quiet_hours_start=22,
+            notification_quiet_hours_end=7,
+            notification_timezone="UTC",
+            notification_categories_disabled="task_completion",
+        ),
+        bot=bot,
+        admin_chat_id=42,
+        now_provider=_make_now(12),
+    )
+    manager.emit(
+        category="approval",
+        priority="high",
+        title="Approval needed",
+        body="Please approve",
+    )
+    assert manager.queue_size() == 1
+    sent = await manager.flush(batched=False)
+    assert sent == 1
+    assert len(bot.sent) == 1
+    assert "Approval needed" in bot.sent[0]["text"]

@@ -40,4 +40,21 @@ Notification content is produced by the loop, heartbeat, approval gateway, and h
 4. **Audit** — Every significant event is written to the audit trail for later query and export.
 5. **Notifications** — Selected events are pushed to the admin chat according to delivery mode and priority.
 
+## Workflows
+
+Workflow definitions live in YAML files under the workflows directory and are loaded by **WorkflowLoader** (`src/cue_agent/workflows/loader.py`). The **WorkflowManager** discovers files, resolves triggers (manual, schedules, events), and runs workflows via the **WorkflowEngine**.
+
+### Workflow template variables
+
+Workflow YAML can contain template placeholders that are replaced when a workflow is loaded. This allows the same file to be parameterized by environment or by input (e.g. from Telegram).
+
+- **Placeholder syntax:** Use `{{ VAR }}` or `{{ VAR_NAME }}` in string values (one identifier between double braces). Keys are not substituted.
+- **Passing variables:** The loader accepts an optional `variables` dict:
+  - `WorkflowLoader.load_file(path, variables={"ENV": "production", "USER": "alice"})` — pass a dict when loading a single file.
+  - `WorkflowLoader.load_all(variables=...)` — pass the same dict when loading all workflows.
+- **Typical sources for the dict:**
+  - Environment: e.g. `os.environ.get("CUE_WORKFLOW_VAR_FOO")` for a variable named `FOO`.
+  - Telegram or other input: when starting a workflow from a command or form, merge user-provided values into the variables dict before calling the loader.
+- **Behavior:** Any `{{ NAME }}` in a string value is replaced by `variables.get("NAME", "")`. Missing variables are replaced with an empty string. Substitution is applied recursively to the whole loaded structure (including steps and nested fields).
+
 For deployment and operations (backups, secrets, health), see the [deployment guide](deployment.md) and [security](security.md) doc.

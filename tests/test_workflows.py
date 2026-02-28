@@ -262,6 +262,29 @@ def test_workflow_loader_validation_errors(tmp_path: Path):
         _ = loader.load_file(bad_file)
 
 
+def test_workflow_loader_template_variables(tmp_path: Path):
+    workflows_dir = tmp_path / "workflows"
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+    workflow_file = workflows_dir / "templated.yaml"
+    workflow_file.write_text(
+        """
+name: templated-workflow
+description: "Hello {{ NAME }}"
+trigger:
+  manual: true
+steps:
+  - id: greet
+    type: llm
+    prompt: "Say hello to {{ NAME }}"
+""".strip(),
+        encoding="utf-8",
+    )
+    loader = WorkflowLoader(str(workflows_dir))
+    loaded = loader.load_file(workflow_file, variables={"NAME": "World"})
+    assert loaded.description == "Hello World"
+    assert loaded.steps[0]["prompt"] == "Say hello to World"
+
+
 @pytest.mark.asyncio
 async def test_workflow_manager_refresh_and_unknown_workflow(tmp_path: Path):
     workflows_dir = tmp_path / "workflows"

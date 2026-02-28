@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -387,3 +388,54 @@ async def test_ralph_loop_delegates_child_subtasks_to_multi_agent_orchestrator()
     assert len(orchestrator.calls) == 1
     assert task_queue.marked_done == [13, 12]
     assert "Sub-agent handoff summary" in brain.plan_calls[0]["memory_context"]
+
+
+@pytest.mark.asyncio
+async def test_ralph_loop_cooldown_after_failures():
+    """After N consecutive failures, loop sleeps cooldown_seconds before next iteration."""
+    # Each run_once may call brain.chat (e.g. task_picker.pick if no queued task) and brain.plan; provide enough responses.
+    brain = _FakeBrain(
+        ["Run backup", "SUCCESS - backup complete", "Run backup", "SUCCESS - done"],
+        macro_steps=1,
+    )
+    memory = _FakeMemory()
+    memory.context_map[LOOP_CHAT_ID] = "prior"
+    actions = _FakeActions()
+    executor = _FakeExecutor()
+    executor.failures_remaining = 999  # always fail (no retries in test)
+    config = CueConfig(
+        loop_cooldown_after_failures=2,
+        loop_cooldown_seconds=0,  # 0 for fast test; we only assert sleep was called
+        retry_tool_attempts=1,
+    )
+    loop = RalphLoop(
+        brain=brain,
+        memory=memory,
+        actions=actions,
+        executor=executor,
+        state_manager=object(),
+        approval_gate=_FakeApprovalGate(),
+        config=config,
+    )
+    task_queue = _FakeTaskQueue()
+    task_queue._next_task = {"id": 1, "title": "Task", "description": "", "priority": 1}
+    loop.task_queue = task_queue
+
+    sleep_calls: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    with patch("cue_agent.loop.ralph_loop.asyncio.sleep", side_effect=record_sleep):
+        # First run: fails -> consecutive_failures=1
+        with pytest.raises(RuntimeError, match="tool execution failed"):
+            await loop.run_once()
+        # Second run: fails -> consecutive_failures=2
+        with pytest.raises(RuntimeError, match="tool execution failed"):
+            await loop.run_once()
+        # Third run: cooldown triggers (2 >= 2), sleep(0), then _iteration() runs and fails again
+        with pytest.raises(RuntimeError, match="tool execution failed"):
+            await loop.run_once()
+
+    # Cooldown sleep should have been called on the third run_once (with 0 seconds)
+    assert any(c == 0 for c in sleep_calls), "Expected asyncio.sleep(0) from cooldown"

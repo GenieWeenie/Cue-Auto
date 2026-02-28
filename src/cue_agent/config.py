@@ -61,6 +61,9 @@ class CueConfig(BaseSettings):
     notification_timezone: str = "UTC"
     notification_hourly_digest_cron: str = "0 * * * *"
     notification_daily_digest_cron: str = "0 8 * * *"
+    # Comma-separated list of notification categories to disable (e.g. "task_completion,digest").
+    # Env: CUE_NOTIFICATION_CATEGORIES_DISABLED
+    notification_categories_disabled: str = ""
 
     # --- Memory / State ---
     state_db_path: str = "cue_state.db"
@@ -106,6 +109,8 @@ class CueConfig(BaseSettings):
     # --- Autonomous Loop ---
     loop_enabled: bool = False
     loop_interval_seconds: int = 30
+    loop_cooldown_after_failures: int = 0  # 0 = disabled
+    loop_cooldown_seconds: int = 300  # wait after hitting failure count
     task_queue_enabled: bool = True
     task_queue_max_list: int = 20
     task_queue_retry_failed_attempts: int = 2
