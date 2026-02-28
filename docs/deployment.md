@@ -1,6 +1,6 @@
 # CueAgent Deployment Guide
 
-This guide covers production deployment options for CueAgent:
+This guide covers production deployment options for CueAgent. For risk controls, approval flows, and RBAC, see [security](security.md).
 
 1. Docker Compose (recommended)
 2. Docker Compose webhook + automatic SSL
@@ -192,9 +192,25 @@ sudo systemctl status cue-agent
 
 - Graceful shutdown: CueAgent handles `SIGTERM`, stops loop/heartbeat/telegram cleanly, then exits.
 - Restart policy: use `restart: unless-stopped` (Docker) or `Restart=always` (systemd).
-- Backups: periodically back up `./data/cue_state.db`.
-- Keep dashboard credentials rotated when exposing dashboard routes beyond localhost.
-- Keep `CUE_TELEGRAM_WEBHOOK_SECRET_TOKEN` rotated and never reuse bot tokens as webhook secrets.
+
+### Backup and runbook
+
+- **State database** — Periodically back up `./data/cue_state.db` (or `/data/cue_state.db` in Docker). This holds conversation state, task queue, audit trail, and user/role data.
+- **Suggested runbook** — (1) Stop or quiesce the app if you need a consistent snapshot. (2) Copy `./data/cue_state.db` to a dated backup path or remote storage. (3) If using vector memory, also back up `./data/vector_memory` (or the path set by `CUE_VECTOR_MEMORY_PATH`). (4) Restore by replacing the file and restarting the service.
+- **Retention** — Align backup frequency with `CUE_AUDIT_RETENTION_DAYS`; keep at least one backup beyond your retention window.
+
+### Secrets rotation
+
+- **`.env` / `.env.production`** — Rotate in place: update the token/key, then restart the process (Docker: `docker compose up -d --force-recreate`; systemd: `sudo systemctl restart cue-agent`). Avoid leaving old values in history or logs.
+- **Telegram bot token** — Create a new bot with [@BotFather](https://t.me/BotFather) if needed; update `CUE_TELEGRAM_BOT_TOKEN` and restart. For webhook mode, re-register the webhook URL after rotating.
+- **Webhook secret** — Generate a new random value for `CUE_TELEGRAM_WEBHOOK_SECRET_TOKEN` and update the running config; no need to change the bot token.
+- **LLM API keys** — Rotate in the provider’s dashboard, then update the corresponding `CUE_*_API_KEY` and restart. No in-app key history.
+
+### Health and dashboard in production
+
+- **`/healthz`** — Use for liveness/readiness probes. Response includes `providers` (LLM provider status), `loop.running`, `loop.last_iteration_time`, and (in webhook mode) `telegram.webhook.*` diagnostics. Bind with `CUE_HEALTHCHECK_HOST` / `CUE_HEALTHCHECK_PORT` (default `0.0.0.0:8080`).
+- **Dashboard** — Enable with `CUE_DASHBOARD_ENABLED=true`. Routes: `/dashboard` (summary), `/dashboard/actions`, `/dashboard/tasks`, `/dashboard/providers`. Protected by HTTP Basic Auth (`CUE_DASHBOARD_USERNAME`, `CUE_DASHBOARD_PASSWORD`). Set strong credentials and restrict access (firewall, VPN, or reverse proxy auth) when exposed. Timeline length is limited by `CUE_DASHBOARD_TIMELINE_LIMIT`.
+- **Tuning** — In high-load or multi-instance setups, run only one instance with the loop enabled, or use external task distribution; the in-app task queue is single-process.
 
 ## Proxy and Firewall Checklist
 
