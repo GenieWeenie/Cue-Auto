@@ -41,6 +41,12 @@ The `/healthz` response includes:
 - `loop.last_iteration_time`
 - queued message count
 
+Optional web dashboard:
+
+- Enable with `CUE_DASHBOARD_ENABLED=true`
+- Protect with `CUE_DASHBOARD_USERNAME` + `CUE_DASHBOARD_PASSWORD`
+- Access at `http://localhost:8080/dashboard`
+
 ### Persistence
 
 `docker-compose.yml` mounts:
@@ -139,4 +145,4 @@ sudo systemctl status cue-agent
 - Graceful shutdown: CueAgent handles `SIGTERM`, stops loop/heartbeat/telegram cleanly, then exits.
 - Restart policy: use `restart: unless-stopped` (Docker) or `Restart=always` (systemd).
 - Backups: periodically back up `./data/cue_state.db`.
-
+- Keep dashboard credentials rotated when exposing dashboard routes beyond localhost.

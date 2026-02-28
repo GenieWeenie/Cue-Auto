@@ -104,6 +104,10 @@ class CueConfig(BaseSettings):
     healthcheck_enabled: bool = True
     healthcheck_host: str = "0.0.0.0"
     healthcheck_port: int = 8080
+    dashboard_enabled: bool = False
+    dashboard_username: str = "admin"
+    dashboard_password: str = "change-me"
+    dashboard_timeline_limit: int = 200
 
     # --- Retry / Resilience ---
     retry_tool_attempts: int = 3

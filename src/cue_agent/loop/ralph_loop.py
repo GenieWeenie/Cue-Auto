@@ -59,6 +59,7 @@ class RalphLoop:
         self._running = False
         self._iteration_count = 0
         self._last_iteration_time: datetime | None = None
+        self._current_task: str | None = None
 
     async def run_forever(self) -> None:
         """Run the autonomous loop until stopped."""
@@ -90,6 +91,10 @@ class RalphLoop:
         if self._last_iteration_time is None:
             return None
         return self._last_iteration_time.isoformat()
+
+    @property
+    def current_task(self) -> str | None:
+        return self._current_task
 
     async def _iteration(self) -> None:
         self._iteration_count += 1
@@ -127,80 +132,86 @@ class RalphLoop:
         if task is None:
             task = self._task_picker.pick(context)
             if task is None:
+                self._current_task = None
                 logger.info("Idle — no tasks to execute")
                 return
 
-        # 3. PLAN — generate EAP macro
-        manifest = self.actions.get_hashed_manifest()
-        memory_ctx = self.memory.get_context(LOOP_CHAT_ID, limit=10)
-        if self.vector_memory is not None:
-            vector_ctx = self.vector_memory.recall_as_context(LOOP_CHAT_ID, task)
-            if vector_ctx:
-                memory_ctx = f"{memory_ctx}\n\n{vector_ctx}" if memory_ctx else vector_ctx
-        macro = self.brain.plan(task, manifest, memory_context=memory_ctx)
-        logger.info("Generated macro with %d steps", len(macro.steps))
+        self._current_task = str(task).split("\n", 1)[0][:240]
 
-        # 4. APPROVE — inject HITL checkpoints
-        macro = self.approval_gate.inject_approvals(macro)
-
-        # 5. EXECUTE — run via EAP's AsyncLocalExecutor
-        run_id = f"loop_{self._iteration_count}_{uuid4().hex[:6]}"
         try:
-            result = await self._execute_macro_with_retry(macro, run_id=run_id)
-        except Exception as exc:
+            # 3. PLAN — generate EAP macro
+            manifest = self.actions.get_hashed_manifest()
+            memory_ctx = self.memory.get_context(LOOP_CHAT_ID, limit=10)
+            if self.vector_memory is not None:
+                vector_ctx = self.vector_memory.recall_as_context(LOOP_CHAT_ID, task)
+                if vector_ctx:
+                    memory_ctx = f"{memory_ctx}\n\n{vector_ctx}" if memory_ctx else vector_ctx
+            macro = self.brain.plan(task, manifest, memory_context=memory_ctx)
+            logger.info("Generated macro with %d steps", len(macro.steps))
+
+            # 4. APPROVE — inject HITL checkpoints
+            macro = self.approval_gate.inject_approvals(macro)
+
+            # 5. EXECUTE — run via EAP's AsyncLocalExecutor
+            run_id = f"loop_{self._iteration_count}_{uuid4().hex[:6]}"
+            try:
+                result = await self._execute_macro_with_retry(macro, run_id=run_id)
+            except Exception as exc:
+                if selected_task_id is not None and self.task_queue is not None:
+                    self.task_queue.mark_failed(
+                        selected_task_id,
+                        error=str(exc),
+                        retry_limit=self.config.task_queue_retry_failed_attempts,
+                    )
+                    self._emit_notification(
+                        category="task_completion",
+                        priority="high",
+                        title=f"Task #{selected_task_id} failed",
+                        body=str(exc),
+                    )
+                raise
+
+            # 6. VERIFY — check success
+            result_str = str(result) if result else "No output"
+            verification = self._verifier.verify(task, result_str)
             if selected_task_id is not None and self.task_queue is not None:
-                self.task_queue.mark_failed(
-                    selected_task_id,
-                    error=str(exc),
-                    retry_limit=self.config.task_queue_retry_failed_attempts,
-                )
-                self._emit_notification(
-                    category="task_completion",
-                    priority="high",
-                    title=f"Task #{selected_task_id} failed",
-                    body=str(exc),
-                )
-            raise
+                if verification.success:
+                    self.task_queue.mark_done(selected_task_id)
+                    self._emit_notification(
+                        category="task_completion",
+                        priority="medium",
+                        title=f"Task #{selected_task_id} completed",
+                        body=verification.summary,
+                    )
+                else:
+                    self.task_queue.mark_failed(
+                        selected_task_id,
+                        error=verification.summary,
+                        retry_limit=self.config.task_queue_retry_failed_attempts,
+                    )
+                    self._emit_notification(
+                        category="task_completion",
+                        priority="high",
+                        title=f"Task #{selected_task_id} failed verification",
+                        body=verification.summary,
+                    )
 
-        # 6. VERIFY — check success
-        result_str = str(result) if result else "No output"
-        verification = self._verifier.verify(task, result_str)
-        if selected_task_id is not None and self.task_queue is not None:
-            if verification.success:
-                self.task_queue.mark_done(selected_task_id)
-                self._emit_notification(
-                    category="task_completion",
-                    priority="medium",
-                    title=f"Task #{selected_task_id} completed",
-                    body=verification.summary,
-                )
-            else:
-                self.task_queue.mark_failed(
-                    selected_task_id,
-                    error=verification.summary,
-                    retry_limit=self.config.task_queue_retry_failed_attempts,
-                )
-                self._emit_notification(
-                    category="task_completion",
-                    priority="high",
-                    title=f"Task #{selected_task_id} failed verification",
-                    body=verification.summary,
-                )
-
-        # 7. COMMIT — record in memory
-        outcome = f"Task: {task}\nResult: {verification.summary}"
-        self.memory.add_turn(LOOP_CHAT_ID, "assistant", outcome, run_id=run_id)
-        if self.vector_memory is not None:
-            self.vector_memory.add_turn(LOOP_CHAT_ID, "assistant", outcome, run_id=run_id)
-        logger.info(
-            "Loop iteration complete",
-            extra={
-                "event": "loop_iteration_complete",
-                "iteration": self._iteration_count,
-                "run_id": run_id,
-                "success": verification.success,
-            },
-        )
+            # 7. COMMIT — record in memory
+            outcome = f"Task: {task}\nResult: {verification.summary}"
+            self.memory.add_turn(LOOP_CHAT_ID, "assistant", outcome, run_id=run_id)
+            if self.vector_memory is not None:
+                self.vector_memory.add_turn(LOOP_CHAT_ID, "assistant", outcome, run_id=run_id)
+            logger.info(
+                "Loop iteration complete",
+                extra={
+                    "event": "loop_iteration_complete",
+                    "iteration": self._iteration_count,
+                    "run_id": run_id,
+                    "success": verification.success,
+                },
+            )
+        finally:
+            self._current_task = None
 
     def _emit_notification(self, *, category: str, priority: str, title: str, body: str) -> None:
         if self._notification_handler is None:

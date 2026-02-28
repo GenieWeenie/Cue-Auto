@@ -71,3 +71,38 @@ def test_manifest_methods_return_dicts():
     registry = ActionRegistry()
     assert isinstance(registry.get_hashed_manifest(), dict)
     assert isinstance(registry.get_agent_manifest(), dict)
+
+
+def test_tool_event_handler_receives_execution_data():
+    events: list[dict[str, object]] = []
+    registry = ActionRegistry(tool_event_handler=events.append)
+    skill = LoadedSkill(
+        name="utility",
+        description="utility tools",
+        tools=[
+            LoadedTool(
+                name="echo_tool",
+                func=_dummy_tool,
+                schema={
+                    "name": "echo_tool",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                        "required": ["value"],
+                        "additionalProperties": False,
+                    },
+                },
+            )
+        ],
+    )
+    registry.load_skills({"utility": skill})
+
+    tool = registry.eap_registry._tools["echo_tool"]
+    result = tool(value="hello")
+
+    assert result == {"ok": {"value": "hello"}}
+    assert events
+    event = events[-1]
+    assert event["event"] == "tool_execution"
+    assert event["tool_name"] == "echo_tool"
+    assert event["outcome"] == "success"

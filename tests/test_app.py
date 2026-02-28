@@ -98,6 +98,10 @@ def _install_fakes(
             self.healthcheck_enabled = False
             self.healthcheck_host = "127.0.0.1"
             self.healthcheck_port = 0
+            self.dashboard_enabled = False
+            self.dashboard_username = "admin"
+            self.dashboard_password = "change-me"
+            self.dashboard_timeline_limit = 200
             self.retry_tool_attempts = 3
             self.retry_telegram_attempts = 5
             self.retry_llm_attempts = 3
@@ -147,6 +151,23 @@ def _install_fakes(
 
         def usage_report_text(self) -> str:
             return "Usage (2026-02 UTC)\nTotal estimated spend: $0.0000"
+
+        def usage_summary(self):
+            return {
+                "month": "2026-02",
+                "total_estimated_cost_usd": 0.0,
+                "providers": {
+                    "openai": {
+                        "requests": 0,
+                        "tokens_in": 0,
+                        "tokens_out": 0,
+                        "tokens_total": 0,
+                        "estimated_cost_usd": 0.0,
+                        "avg_latency_ms": 0,
+                        "last_model": "gpt-4o",
+                    }
+                },
+            }
 
     class FakeBrain:
         def __init__(self, config, soul_loader, router):  # noqa: ARG002
@@ -243,7 +264,7 @@ def _install_fakes(
             return {"pending": 0, "blocked": 0, "in_progress": 0, "failed": 0, "done": 0, "canceled": 0, "total": 0}
 
     class FakeActionRegistry:
-        def __init__(self, telegram_bot=None):
+        def __init__(self, telegram_bot=None, tool_event_handler=None):  # noqa: ARG002
             t.action_registry_bots.append(telegram_bot)
             self.eap_registry = object()
             self._skill_names = []
@@ -276,6 +297,9 @@ def _install_fakes(
     class FakeRiskClassifier:
         def __init__(self, tools, **kwargs):  # noqa: ARG002
             pass
+
+        def assess(self, tool_name, arguments=None, **kwargs):  # noqa: ANN001, ARG002
+            return SimpleNamespace(level="low", reason=f"{tool_name} default")
 
     class FakeApprovalGate:
         def __init__(self, classifier, approval_gateway=None, tool_name_lookup=None, risk_event_handler=None):  # noqa: ARG002
@@ -395,6 +419,7 @@ def _install_fakes(
         def __init__(self, **kwargs):  # noqa: ARG002
             self.is_running = False
             self.last_iteration_time = None
+            self.current_task = None
 
         async def run_forever(self):
             t.loop_run_forever += 1
@@ -453,6 +478,28 @@ async def test_app_init_without_telegram_and_handle_message(monkeypatch):
     assert health["providers"] == {"openai": "unknown"}
     assert health["memory"] == {"vector_enabled": False, "vector_available": False}
     assert health["notifications"]["enabled"] is True
+
+
+def test_app_dashboard_snapshot_and_timeline(monkeypatch):
+    _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+
+    app._handle_tool_event(
+        {
+            "tool_name": "read_file",
+            "arguments": {"path": "README.md"},
+            "duration_ms": 42,
+            "outcome": "success",
+        }
+    )
+
+    snapshot = app._build_dashboard_snapshot()
+    assert snapshot["runtime"]["status"] == "stopped"
+    assert "uptime_human" in snapshot["runtime"]
+    assert isinstance(snapshot["tasks"], list)
+    assert len(snapshot["actions"]) == 1
+    assert snapshot["actions"][0]["tool_name"] == "read_file"
+    assert snapshot["actions"][0]["risk_level"] == "low"
 
 
 @pytest.mark.asyncio

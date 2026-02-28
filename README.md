@@ -116,7 +116,7 @@ Cue-Auto/
 │   │   ├── scheduler.py       # APScheduler wrapper
 │   │   └── tasks.py           # Scheduled task implementations
 │   ├── health/
-│   │   └── server.py          # Lightweight HTTP health endpoint (/healthz)
+│   │   └── server.py          # Health endpoint + optional web dashboard
 │   └── skills/
 │       ├── loader.py          # Discovers and loads skills
 │       └── watcher.py         # Filesystem polling for hot-reload
@@ -205,6 +205,13 @@ Health endpoint:
 curl http://localhost:8080/healthz
 ```
 
+Dashboard (when enabled):
+
+```bash
+# browser
+open http://localhost:8080/dashboard
+```
+
 For full production instructions (Docker, systemd, Railway/Fly.io/DigitalOcean), see [`docs/deployment.md`](docs/deployment.md).
 
 ## Running
@@ -232,6 +239,22 @@ The Ralph loop runs autonomously — picking tasks, planning, executing, and ver
 ### Both Together
 
 Set `CUE_LOOP_ENABLED=true` in `.env` and run in polling mode. The Telegram interface and autonomous loop run concurrently — you can chat with the agent while it works autonomously in the background.
+
+### Web Monitoring Dashboard
+
+Enable dashboard mode via environment variables:
+
+```env
+CUE_DASHBOARD_ENABLED=true
+CUE_DASHBOARD_USERNAME=admin
+CUE_DASHBOARD_PASSWORD=replace-this
+```
+
+The dashboard is served on the health endpoint port and protected by HTTP Basic Auth. Routes:
+- `/dashboard` — runtime summary (status, uptime, current task, provider health)
+- `/dashboard/actions` — action timeline with tool/risk/duration/outcome
+- `/dashboard/tasks` — queue stats and task list
+- `/dashboard/providers` — provider status and usage metrics
 
 ### Telegram Commands
 
@@ -415,6 +438,10 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 | `CUE_HEALTHCHECK_ENABLED` | `true` | Enable `/healthz` endpoint for probes |
 | `CUE_HEALTHCHECK_HOST` | `0.0.0.0` | Health endpoint bind host |
 | `CUE_HEALTHCHECK_PORT` | `8080` | Health endpoint bind port |
+| `CUE_DASHBOARD_ENABLED` | `false` | Enable authenticated web monitoring dashboard |
+| `CUE_DASHBOARD_USERNAME` | `admin` | Basic auth username for dashboard routes |
+| `CUE_DASHBOARD_PASSWORD` | `change-me` | Basic auth password for dashboard routes |
+| `CUE_DASHBOARD_TIMELINE_LIMIT` | `200` | Max in-memory action timeline entries |
 
 ## License
 

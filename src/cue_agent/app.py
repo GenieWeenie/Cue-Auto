@@ -44,6 +44,10 @@ class CueApp:
         self.config = CueConfig()
         self._setup_logging()
         self.notification_manager: NotificationManager | None = None
+        self._started_at = datetime.now(timezone.utc)
+        self._is_running = False
+        self._action_timeline: list[dict[str, Any]] = []
+        self._timeline_limit = max(20, self.config.dashboard_timeline_limit)
 
         # --- Memory (EAP StateManager) ---
         self.state_manager = StateManager(db_path=self.config.state_db_path)
@@ -59,7 +63,7 @@ class CueApp:
         self.vector_memory = VectorMemory(self.config)
 
         # --- Actions ---
-        self.actions = ActionRegistry()
+        self.actions = ActionRegistry(tool_event_handler=self._handle_tool_event)
         self.executor = AsyncLocalExecutor(self.state_manager, self.actions.eap_registry)
 
         # --- Security ---
@@ -85,7 +89,7 @@ class CueApp:
             )
             # Wire Telegram bot into actions and approval
             bot = self.telegram.app.bot
-            self.actions = ActionRegistry(telegram_bot=bot)
+            self.actions = ActionRegistry(telegram_bot=bot, tool_event_handler=self._handle_tool_event)
             self.executor = AsyncLocalExecutor(self.state_manager, self.actions.eap_registry)
             self.approval_gateway = ApprovalGateway(bot, self.config.telegram_admin_chat_id)
             self.notification_manager = NotificationManager(
@@ -134,6 +138,10 @@ class CueApp:
             host=self.config.healthcheck_host,
             port=self.config.healthcheck_port,
             status_provider=self._build_health_status,
+            dashboard_enabled=self.config.dashboard_enabled,
+            dashboard_status_provider=self._build_dashboard_snapshot,
+            dashboard_username=self.config.dashboard_username,
+            dashboard_password=self.config.dashboard_password,
         )
 
     def _setup_logging(self) -> None:
@@ -445,6 +453,47 @@ class CueApp:
             "Tip: use `/tasks download` to receive a JSON export."
         )
 
+    def _handle_tool_event(self, event: dict[str, Any]) -> None:
+        tool_name = str(event.get("tool_name", "unknown"))
+        arguments = event.get("arguments")
+        risk_level = "unknown"
+        risk_reason = ""
+        if isinstance(arguments, dict):
+            try:
+                decision = self.risk_classifier.assess(tool_name, arguments)
+                risk_level = decision.level
+                risk_reason = decision.reason
+            except Exception:
+                logger.exception(
+                    "Failed to classify tool event risk", extra={"event": "tool_risk_classification_error"}
+                )
+
+        summary = ""
+        if event.get("error"):
+            summary = str(event.get("error"))
+        elif risk_reason:
+            summary = risk_reason
+
+        self._append_timeline_event(
+            {
+                "event_type": "tool",
+                "tool_name": tool_name,
+                "risk_level": risk_level,
+                "duration_ms": int(event.get("duration_ms", 0) or 0),
+                "outcome": str(event.get("outcome", "unknown")),
+                "summary": summary[:240],
+                "arguments": arguments if isinstance(arguments, dict) else {},
+            }
+        )
+
+    def _append_timeline_event(self, entry: dict[str, Any]) -> None:
+        row = dict(entry)
+        row["timestamp_utc"] = datetime.now(timezone.utc).isoformat()
+        self._action_timeline.append(row)
+        overflow = len(self._action_timeline) - self._timeline_limit
+        if overflow > 0:
+            del self._action_timeline[:overflow]
+
     def _notify_event(self, *, category: str, priority: str, title: str, body: str, metadata: dict[str, Any]) -> None:
         if self.notification_manager is None:
             return
@@ -458,6 +507,17 @@ class CueApp:
 
     def _handle_router_event(self, event: dict[str, Any]) -> None:
         event_name = str(event.get("event", ""))
+        if event_name in {"llm_budget_warning", "llm_budget_hard_stop"}:
+            self._append_timeline_event(
+                {
+                    "event_type": "router",
+                    "tool_name": "llm_router",
+                    "risk_level": "high" if event_name == "llm_budget_warning" else "critical",
+                    "duration_ms": 0,
+                    "outcome": event_name,
+                    "summary": str(event.get("provider", "budget event")),
+                }
+            )
         if event_name == "llm_budget_warning":
             spend = float(event.get("monthly_spend_usd", 0.0))
             warn = float(event.get("warning_threshold_usd", 0.0))
@@ -483,6 +543,16 @@ class CueApp:
         if str(event.get("event", "")) != "high_risk_action":
             return
         risk_level = str(event.get("risk_level", "high")).lower()
+        self._append_timeline_event(
+            {
+                "event_type": "risk",
+                "tool_name": str(event.get("tool_name", "unknown")),
+                "risk_level": risk_level,
+                "duration_ms": 0,
+                "outcome": "approval_required",
+                "summary": str(event.get("reason", "approval required"))[:240],
+            }
+        )
         priority = "critical" if risk_level == "critical" else "high"
         tool_name = str(event.get("tool_name", "unknown"))
         reason = str(event.get("reason", "approval required"))
@@ -499,6 +569,16 @@ class CueApp:
         priority = str(event.get("priority", "medium"))
         title = str(event.get("title", "Loop event"))
         body = str(event.get("body", ""))
+        self._append_timeline_event(
+            {
+                "event_type": "loop",
+                "tool_name": str(event.get("source", "loop")),
+                "risk_level": priority,
+                "duration_ms": 0,
+                "outcome": category,
+                "summary": f"{title}: {body}"[:240],
+            }
+        )
         self._notify_event(
             category=category,
             priority=priority,
@@ -546,6 +626,7 @@ class CueApp:
 
     async def start(self, mode: str = "polling") -> None:
         """Start CueAgent in the specified mode."""
+        self._is_running = True
         logger.info("Starting CueAgent in '%s' mode", mode)
         logger.info(
             "Tools: %d total (%d skills: %s)",
@@ -666,6 +747,7 @@ class CueApp:
 
     async def _shutdown(self) -> None:
         """Graceful shutdown."""
+        self._is_running = False
         self.ralph_loop.stop()
         await self.heartbeat.stop()
         if self.notification_manager is not None:
@@ -682,9 +764,15 @@ class CueApp:
         await self.notification_manager.flush(batched=batched)
 
     def _build_health_status(self) -> dict[str, Any]:
+        uptime_seconds = max(0, int((datetime.now(timezone.utc) - self._started_at).total_seconds()))
         return {
             "status": "ok",
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "runtime": {
+                "started_at_utc": self._started_at.isoformat(),
+                "uptime_seconds": uptime_seconds,
+                "current_task": self.ralph_loop.current_task,
+            },
             "providers": self.router.health_status(),
             "loop": {
                 "enabled": self.config.loop_enabled,
@@ -705,3 +793,53 @@ class CueApp:
                 "vector_available": self.vector_memory.is_available,
             },
         }
+
+    def _build_dashboard_snapshot(self) -> dict[str, Any]:
+        health = self._build_health_status()
+        runtime = health.get("runtime", {}) if isinstance(health.get("runtime"), dict) else {}
+        queue = health.get("queue", {}) if isinstance(health.get("queue"), dict) else {}
+        task_limit = max(20, min(100, self.config.task_queue_max_list))
+        tasks = self.task_queue.list_tasks(status=None, limit=task_limit)
+        usage = self.router.usage_summary()
+        provider_metrics = usage.get("providers", {}) if isinstance(usage, dict) else {}
+
+        return {
+            "timestamp_utc": health.get("timestamp_utc"),
+            "runtime": {
+                "status": "running" if self._is_running else "stopped",
+                "started_at_utc": runtime.get("started_at_utc"),
+                "uptime_seconds": runtime.get("uptime_seconds"),
+                "uptime_human": self._format_uptime_human(int(runtime.get("uptime_seconds", 0) or 0)),
+                "current_task": runtime.get("current_task"),
+            },
+            "providers": health.get("providers", {}),
+            "provider_metrics": provider_metrics,
+            "queue": queue,
+            "tasks": tasks,
+            "actions": list(reversed(self._action_timeline[-100:])),
+            "config": {
+                "loop_enabled": self.config.loop_enabled,
+                "task_queue_enabled": self.config.task_queue_enabled,
+                "notifications_enabled": self.config.notifications_enabled,
+                "notification_mode": self.config.notification_delivery_mode,
+                "dashboard_enabled": self.config.dashboard_enabled,
+                "healthcheck_port": self.config.healthcheck_port,
+                "vector_memory_enabled": self.config.vector_memory_enabled,
+            },
+        }
+
+    @staticmethod
+    def _format_uptime_human(seconds: int) -> str:
+        total = max(0, seconds)
+        days, rem = divmod(total, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, secs = divmod(rem, 60)
+        parts: list[str] = []
+        if days:
+            parts.append(f"{days}d")
+        if hours or parts:
+            parts.append(f"{hours}h")
+        if minutes or parts:
+            parts.append(f"{minutes}m")
+        parts.append(f"{secs}s")
+        return " ".join(parts)
