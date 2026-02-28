@@ -121,8 +121,8 @@ async def test_gateway_message_sets_correlation(monkeypatch):
 
     replies = []
 
-    async def _reply_text(text: str, parse_mode: str, reply_markup=None):  # noqa: ARG001
-        replies.append((text, parse_mode, reply_markup))
+    async def _reply_text(text: str, parse_mode: str, reply_markup=None, **kwargs):  # noqa: ARG001
+        replies.append((text, parse_mode, reply_markup, kwargs))
         return None
 
     update.message.reply_text = _reply_text
@@ -142,6 +142,87 @@ async def test_gateway_message_sets_correlation(monkeypatch):
     assert isinstance(observed["corr"], str)
     assert observed["corr"].startswith("tg_")
     assert replies[0][0] == "ok:hello"
+    assert replies[0][3] == {}
+
+
+@pytest.mark.asyncio
+async def test_gateway_reply_includes_message_thread_id_when_topic_replies_enabled(monkeypatch):
+    """When telegram_use_topic_replies is True and message has message_thread_id, replies use it."""
+    monkeypatch.setattr("cue_agent.comms.telegram_gateway.Application", _FakeApplication)
+
+    async def _on_message(msg: UnifiedMessage) -> UnifiedResponse:
+        return UnifiedResponse(text=f"ok:{msg.text}", chat_id=msg.chat_id)
+
+    config = CueConfig(telegram_bot_token="token", telegram_use_topic_replies=True)
+    gateway = TelegramGateway(config, on_message=_on_message)
+
+    replies_captured: list[tuple] = []
+
+    async def _reply(*a, **kw):
+        replies_captured.append((a, kw))
+
+    update = SimpleNamespace(
+        message=SimpleNamespace(
+            chat_id=1,
+            reply_text=_reply,
+        )
+    )
+
+    monkeypatch.setattr(
+        "cue_agent.comms.telegram_gateway.MessageNormalizer.normalize_telegram",
+        lambda _u: UnifiedMessage(
+            platform="telegram",
+            chat_id="1",
+            user_id="2",
+            username="tester",
+            text="hello",
+            message_thread_id=42,
+        ),
+    )
+
+    await gateway._handle_message(update, None)
+    assert len(replies_captured) >= 1
+    assert replies_captured[0][1].get("message_thread_id") == 42
+
+
+@pytest.mark.asyncio
+async def test_gateway_reply_omits_message_thread_id_when_topic_replies_disabled(monkeypatch):
+    """When telegram_use_topic_replies is False, replies do not include message_thread_id."""
+    monkeypatch.setattr("cue_agent.comms.telegram_gateway.Application", _FakeApplication)
+
+    async def _on_message(msg: UnifiedMessage) -> UnifiedResponse:
+        return UnifiedResponse(text=f"ok:{msg.text}", chat_id=msg.chat_id)
+
+    config = CueConfig(telegram_bot_token="token", telegram_use_topic_replies=False)
+    gateway = TelegramGateway(config, on_message=_on_message)
+
+    replies_captured: list[tuple] = []
+
+    async def _reply(*a, **kw):
+        replies_captured.append((a, kw))
+
+    update = SimpleNamespace(
+        message=SimpleNamespace(
+            chat_id=1,
+            reply_text=_reply,
+        )
+    )
+
+    monkeypatch.setattr(
+        "cue_agent.comms.telegram_gateway.MessageNormalizer.normalize_telegram",
+        lambda _u: UnifiedMessage(
+            platform="telegram",
+            chat_id="1",
+            user_id="2",
+            username="tester",
+            text="hello",
+            message_thread_id=42,
+        ),
+    )
+
+    await gateway._handle_message(update, None)
+    assert len(replies_captured) >= 1
+    assert "message_thread_id" not in replies_captured[0][1]
 
 
 @pytest.mark.asyncio

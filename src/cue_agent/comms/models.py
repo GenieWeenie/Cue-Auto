@@ -23,6 +23,7 @@ class UnifiedMessage(BaseModel):
     timestamp: datetime = Field(default_factory=_utc_now)
     raw: dict[str, Any] = Field(default_factory=dict)
     reply_to_message_id: str | None = None
+    message_thread_id: int | None = None
 
 
 class UnifiedResponse(BaseModel):

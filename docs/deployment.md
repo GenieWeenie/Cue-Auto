@@ -231,3 +231,11 @@ sudo systemctl status cue-agent
 3. Deploy proxy/SSL (for example `docker-compose.webhook.yml` + Caddy).
 4. Confirm `/healthz` shows webhook diagnostics and `registered=true`.
 5. Send a Telegram message and verify `telegram.webhook.request_count` increments.
+
+## Telegram group topics (threaded replies)
+
+In groups that have **topics** (forum-style threads) enabled, the bot can reply in the same thread as the user’s message so conversation history stays in one place.
+
+- **Behavior** — When an inbound message has a topic/thread ID (`message_thread_id`), the gateway uses that ID for all replies (text and documents) in that chat. So the reply appears in the same topic thread.
+- **Configuration** — Set `CUE_TELEGRAM_USE_TOPIC_REPLIES=true` (default) to enable. Set to `false` to always reply in the main chat (useful for groups that do not use topics).
+- **Detection** — Thread ID is read from the Telegram message when present (forum/topic chats only) and passed through to send calls; no per-chat configuration is required.

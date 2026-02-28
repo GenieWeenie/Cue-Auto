@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import sys
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -28,6 +29,7 @@ class LoadedSkill:
     prompt: str | None = None
     config: dict[str, str] | None = None
     source_path: Path = field(default_factory=lambda: Path("."))
+    depends_on: list[str] = field(default_factory=list)
 
 
 class SkillLoader:
@@ -62,15 +64,57 @@ class SkillLoader:
         return paths
 
     def load_all(self) -> dict[str, LoadedSkill]:
-        """Discover and load all skills. Returns loaded skills dict."""
+        """Discover and load all skills in dependency order. Returns loaded skills dict."""
         paths = self.discover()
+        if not paths:
+            return dict(self._loaded)
+
+        # Load each module once and read manifest (name, depends_on) for ordering
+        path_to_module: dict[Path, ModuleType] = {}
+        path_name_deps: list[tuple[Path, str, list[str]]] = []
+
         for path in paths:
             try:
-                skill = self.load_skill(path)
-                self._loaded[skill.name] = skill
-                logger.info("Loaded skill '%s' (%d tools) from %s", skill.name, len(skill.tools), path)
+                if path.is_file():
+                    module_name = f"cue_skills.{path.stem}"
+                    module = self._load_module(path, module_name)
+                else:
+                    skill_file = path / "skill.py"
+                    module_name = f"cue_skills.{path.name}"
+                    module = self._load_module(skill_file, module_name)
+                path_to_module[path] = module
+                manifest = getattr(module, "SKILL_MANIFEST", None)
+                if manifest is None:
+                    raise ValueError("Module has no SKILL_MANIFEST")
+                name = manifest["name"]
+                depends_on = list(manifest.get("depends_on", []) or [])
+                path_name_deps.append((path, name, depends_on))
             except Exception:
                 logger.exception("Failed to load skill from %s", path)
+
+        # Resolve load order (dependencies first); raises on circular dependency
+        ordered_paths = self._resolve_load_order(path_name_deps)
+
+        # Register skills in dependency order
+        for path in ordered_paths:
+            mod = path_to_module.get(path)
+            if mod is None:
+                continue
+            try:
+                skill = self._extract_skill(mod, path)
+                if path.is_dir():
+                    prompt_file = path / "prompt.md"
+                    if prompt_file.exists():
+                        skill.prompt = prompt_file.read_text(encoding="utf-8").strip()
+                    config_file = path / "config.yaml"
+                    if config_file.exists():
+                        skill.config = self._parse_simple_yaml(config_file)
+                self._loaded[skill.name] = skill
+                self._modules[skill.name] = mod
+                logger.info("Loaded skill '%s' (%d tools) from %s", skill.name, len(skill.tools), path)
+            except Exception:
+                logger.exception("Failed to extract skill from %s", path)
+
         return dict(self._loaded)
 
     def load_skill(self, path: Path) -> LoadedSkill:
@@ -116,6 +160,7 @@ class SkillLoader:
         name = manifest["name"]
         description = manifest.get("description", "")
         raw_tools = manifest.get("tools", [])
+        depends_on = list(manifest.get("depends_on", []) or [])
 
         tools: list[LoadedTool] = []
         for raw in raw_tools:
@@ -131,6 +176,7 @@ class SkillLoader:
             description=description,
             tools=tools,
             source_path=source_path,
+            depends_on=depends_on,
         )
 
     def _load_simple_skill(self, file_path: Path) -> LoadedSkill:
@@ -159,6 +205,66 @@ class SkillLoader:
             skill.config = self._parse_simple_yaml(config_file)
 
         return skill
+
+    @staticmethod
+    def _resolve_load_order(path_name_deps: list[tuple[Path, str, list[str]]]) -> list[Path]:
+        """Return paths in dependency order (dependencies first). Raises ValueError on cycle."""
+        name_to_path = {name: path for path, name, _ in path_name_deps}
+        adj: dict[str, list[str]] = {name: [] for _, name, _ in path_name_deps}
+        in_degree: dict[str, int] = {name: 0 for _, name, _ in path_name_deps}
+
+        for _path, name, deps in path_name_deps:
+            for d in deps:
+                if d in name_to_path and d != name:
+                    adj[d].append(name)
+                    in_degree[name] = in_degree[name] + 1
+
+        q: deque[str] = deque(n for n in in_degree if in_degree[n] == 0)
+        order: list[str] = []
+        while q:
+            n = q.popleft()
+            order.append(n)
+            for neighbor in adj[n]:
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    q.append(neighbor)
+
+        if len(order) != len(path_name_deps):
+            cycle = SkillLoader._find_cycle(path_name_deps)
+            raise ValueError(f"Circular skill dependency: {' -> '.join(cycle)}")
+        return [name_to_path[n] for n in order]
+
+    @staticmethod
+    def _find_cycle(path_name_deps: list[tuple[Path, str, list[str]]]) -> list[str]:
+        """Return a list of skill names forming a cycle in the dependency graph."""
+        name_to_deps: dict[str, list[str]] = {}
+        names = {name for _, name, _ in path_name_deps}
+        for _, name, deps in path_name_deps:
+            name_to_deps[name] = [d for d in deps if d in names and d != name]
+        visiting: set[str] = set()
+        path: list[str] = []
+        path_set: set[str] = set()
+        cycle: list[str] = []
+
+        def dfs(n: str) -> bool:
+            visiting.add(n)
+            path.append(n)
+            path_set.add(n)
+            for d in name_to_deps.get(n, []):
+                if d in path_set:
+                    idx = path.index(d)
+                    cycle.extend(path[idx:] + [d])
+                    return True
+                if d not in visiting and dfs(d):
+                    return True
+            path.pop()
+            path_set.discard(n)
+            return False
+
+        for n in names:
+            if n not in visiting and dfs(n):
+                break
+        return cycle if cycle else list(names)[:3]  # fallback
 
     @staticmethod
     def _parse_simple_yaml(path: Path) -> dict[str, str]:

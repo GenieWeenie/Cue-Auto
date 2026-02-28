@@ -29,6 +29,7 @@ from cue_agent.heartbeat.scheduler import Heartbeat
 from cue_agent.heartbeat.tasks import cleanup_audit_trail, consolidate_vector_memory, daily_summary, health_check
 from cue_agent.health.server import HealthServer
 from cue_agent.loop.ralph_loop import RalphLoop
+from cue_agent.metrics import get_prometheus_text, record_request as metrics_record_request
 from cue_agent.loop.task_queue import TaskQueue
 from cue_agent.logging_utils import correlation_context, get_correlation_id, new_correlation_id, setup_logging
 from cue_agent.memory.session_memory import SessionMemory
@@ -185,6 +186,14 @@ class CueApp:
         )
         self._queued_messages: list[dict[str, Any]] = []
         self._provider_outage_notified = False
+        _metrics_enabled = (
+            getattr(self.config, "metrics_enabled", False)
+            and getattr(self.config, "metrics_type", "none").lower() == "prometheus"
+        )
+
+        def _metrics_provider() -> bytes:
+            return get_prometheus_text(lambda: self.router.usage_summary()) or b""
+
         self.health_server = HealthServer(
             host=self.config.healthcheck_host,
             port=self.config.healthcheck_port,
@@ -193,6 +202,9 @@ class CueApp:
             dashboard_status_provider=self._build_dashboard_snapshot,
             dashboard_username=self.config.dashboard_username,
             dashboard_password=self.config.dashboard_password,
+            metrics_enabled=_metrics_enabled,
+            metrics_provider=_metrics_provider if _metrics_enabled else None,
+            metrics_record_request=metrics_record_request if _metrics_enabled else None,
         )
 
     def _setup_logging(self) -> None:

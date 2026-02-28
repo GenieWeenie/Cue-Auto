@@ -3,6 +3,8 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from cue_agent.skills.loader import SkillLoader
 
 
@@ -163,3 +165,68 @@ def test_unload_skill():
         assert "test_skill" in loader.loaded
         loader.unload_skill("test_skill")
         assert "test_skill" not in loader.loaded
+
+
+def _write_skill_with_deps(dir_path: Path, name: str, depends_on: list[str]) -> Path:
+    """Write a simple skill .py with optional depends_on in manifest."""
+    deps_str = repr(depends_on)
+    skill_file = dir_path / f"{name}.py"
+    skill_file.write_text(
+        f'''
+SKILL_MANIFEST = {{
+    "name": "{name}",
+    "description": "Skill {name}",
+    "depends_on": {deps_str},
+    "tools": [
+        {{
+            "name": "run",
+            "schema": {{
+                "name": "run",
+                "parameters": {{
+                    "type": "object",
+                    "properties": {{"x": {{"type": "string"}}}},
+                    "required": ["x"],
+                    "additionalProperties": False,
+                }}
+            }}
+        }}
+    ]
+}}
+
+def run(x: str) -> dict:
+    return {{"skill": "{name}", "x": x}}
+''',
+        encoding="utf-8",
+    )
+    return skill_file
+
+
+def test_load_order_respects_dependencies():
+    """Skills are loaded so that dependencies appear before dependents."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        _write_skill_with_deps(root, "base", [])
+        _write_skill_with_deps(root, "mid", ["base"])
+        _write_skill_with_deps(root, "top", ["mid"])
+        loader = SkillLoader(root)
+        skills = loader.load_all()
+        order = list(skills.keys())
+        assert order.index("base") < order.index("mid")
+        assert order.index("mid") < order.index("top")
+        assert skills["base"].depends_on == []
+        assert skills["mid"].depends_on == ["base"]
+        assert skills["top"].depends_on == ["mid"]
+
+
+def test_circular_dependency_detected():
+    """Circular skill dependency is detected and reported clearly."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        _write_skill_with_deps(root, "skill_a", ["skill_b"])
+        _write_skill_with_deps(root, "skill_b", ["skill_a"])
+        loader = SkillLoader(root)
+        with pytest.raises(ValueError) as exc_info:
+            loader.load_all()
+        assert "Circular skill dependency" in str(exc_info.value)
+        assert "skill_a" in str(exc_info.value)
+        assert "skill_b" in str(exc_info.value)

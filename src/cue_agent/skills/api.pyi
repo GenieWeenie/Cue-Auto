@@ -9,6 +9,9 @@ class SkillManifest(TypedDict):
     description: str
     tools: list[SkillToolDefinition]
 
+class SkillManifestWithDeps(SkillManifest, total=False):
+    depends_on: list[str]
+
 class SkillContext(Protocol):
     user_id: str
     chat_id: str

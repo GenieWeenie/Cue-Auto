@@ -23,6 +23,12 @@ def _install_fakes(
     load_skills: bool = False,
     outage_on_chat: bool = False,
     vector_memory_enabled: bool = False,
+    workflows_enabled: bool = True,
+    workflows_fire_tasks: list | None = None,
+    workflow_fire_raises: bool = False,
+    router_usage_summary=None,
+    operator_user_ids: tuple[str, ...] = (),
+    multi_user_enabled: bool = True,
 ):
     t = SimpleNamespace(
         action_registry_bots=[],
@@ -63,6 +69,9 @@ def _install_fakes(
         telegram_webhook_start=0,
         telegram_stop=0,
         raise_reload=False,
+        workflow_fire_tasks=workflows_fire_tasks or [],
+        workflow_fire_raises=workflow_fire_raises,
+        router_usage_summary=router_usage_summary,
     )
 
     class FakeConfig:
@@ -141,6 +150,9 @@ def _install_fakes(
             self.telegram_webhook_secret_token = "secret"
             self.telegram_webhook_drop_pending_updates = False
             self.has_telegram = has_telegram
+            self.workflows_enabled = workflows_enabled
+            self.telegram_operator_user_ids = list(operator_user_ids)
+            self.multi_user_enabled = multi_user_enabled
             self.openai_base_url = "https://api.openai.com"
             self.openai_model = "gpt-4o"
             self.llm_temperature = 0.0
@@ -184,6 +196,8 @@ def _install_fakes(
             return "Usage (2026-02 UTC)\nTotal estimated spend: $0.0000"
 
         def usage_summary(self):
+            if getattr(t, "router_usage_summary", None) is not None:
+                return t.router_usage_summary
             return {
                 "month": "2026-02",
                 "total_estimated_cost_usd": 0.0,
@@ -551,7 +565,9 @@ def _install_fakes(
 
         def fire_event(self, event_name: str, **kwargs):  # noqa: ANN003
             t.workflow_events.append((event_name, kwargs))
-            return []
+            if getattr(t, "workflow_fire_raises", False):
+                raise RuntimeError("workflow_fire_event_failed")
+            return getattr(t, "workflow_fire_tasks", []) or []
 
     class FakeWorkflowWatcher:
         def __init__(self, workflows_dir, on_reload):  # noqa: ARG002
@@ -1023,3 +1039,372 @@ async def test_app_queues_messages_when_all_providers_down(monkeypatch):
     _ = await app._handle_message(msg)
     assert len(app._queued_messages) == 2
     assert len(t.notification_events) == 1
+
+
+# --- Integration/component coverage for app.py branches ---
+
+
+def test_router_total_cost_usd_branches(monkeypatch):
+    """Cover _router_total_cost_usd: non-dict summary, bad value type, ValueError."""
+    t = _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    assert app.multi_agent_orchestrator is not None
+    assert app._router_total_cost_usd() == 0.0
+
+    t.router_usage_summary = None
+    assert app._router_total_cost_usd() == 0.0
+    t.router_usage_summary = []
+    assert app._router_total_cost_usd() == 0.0
+    t.router_usage_summary = {"total_estimated_cost_usd": "bad"}
+    assert app._router_total_cost_usd() == 0.0
+    t.router_usage_summary = {"total_estimated_cost_usd": 1.5}
+    assert app._router_total_cost_usd() == 1.5
+
+
+@pytest.mark.asyncio
+async def test_emit_workflow_notification_and_workflow_step_audit(monkeypatch):
+    """Cover _emit_workflow_notification and _handle_workflow_step_audit."""
+    t = _install_fakes(monkeypatch, has_telegram=True)
+    app = app_module.CueApp()
+
+    app._emit_workflow_notification(
+        {"category": "test", "priority": "high", "title": "T", "body": "B", "metadata": {"k": "v"}}
+    )
+    assert any(e["title"] == "T" for e in t.notification_events)
+    app._emit_workflow_notification({"metadata": "not-a-dict"})
+    assert len(t.notification_events) >= 2
+
+    app._handle_workflow_step_audit(
+        {
+            "workflow_name": "w",
+            "step_id": "s1",
+            "status": "success",
+            "step_type": "llm",
+            "duration_ms": 10,
+            "output": {"result": "ok"},
+        }
+    )
+    assert len(app._action_timeline) >= 1
+    assert app._action_timeline[-1]["risk_level"] == "low"
+    app._handle_workflow_step_audit(
+        {"workflow_name": "w2", "step_id": "s2", "status": "failed", "output": "string-output"}
+    )
+    assert app._action_timeline[-1]["risk_level"] == "high"
+    assert app._action_timeline[-1]["arguments"] == {"value": "string-output"}
+
+
+@pytest.mark.asyncio
+async def test_handle_workflow_reload(monkeypatch):
+    """Cover _handle_workflow_reload."""
+    t = _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    await app._handle_workflow_reload()
+    assert t.workflow_reload_count == 1
+
+
+def test_trigger_workflows_disabled_and_exception(monkeypatch):
+    """Cover _trigger_workflows_for_event when workflows disabled or fire_event raises."""
+    _install_fakes(monkeypatch, has_telegram=False, workflows_enabled=False)
+    app = app_module.CueApp()
+    app._trigger_workflows_for_event("test.event", {"x": 1})
+    assert len(app._workflow_tasks) == 0
+
+    t2 = _install_fakes(monkeypatch, has_telegram=False, workflow_fire_raises=True)
+    app2 = app_module.CueApp()
+    app2._trigger_workflows_for_event("tool.execution", {"tool_name": "x"})
+    assert len(app2._workflow_tasks) == 0
+    assert any(e[0] == "tool.execution" for e in t2.workflow_events)
+
+
+@pytest.mark.asyncio
+async def test_trigger_workflows_track_task_and_log_failure(monkeypatch):
+    """Cover _track_workflow_task and _log_workflow_task_result when task raises."""
+
+    async def _fail():
+        raise ValueError("workflow task failed")
+
+    fail_task = asyncio.create_task(_fail())
+    _install_fakes(monkeypatch, has_telegram=False, workflows_fire_tasks=[fail_task])
+    app = app_module.CueApp()
+    app._handle_tool_event({"tool_name": "read_file", "arguments": {"path": "x"}, "outcome": "success"})
+    with pytest.raises(ValueError, match="workflow task failed"):
+        await fail_task
+    assert len(app._workflow_tasks) == 0
+
+
+def test_bootstrap_access_roles_operator(monkeypatch):
+    """Cover _bootstrap_access_roles operator branch."""
+    _install_fakes(monkeypatch, has_telegram=False, operator_user_ids=("op1",))
+    app = app_module.CueApp()
+    row = app.user_access.get_user("op1")
+    assert row is not None and row.get("role") == "operator"
+
+
+@pytest.mark.asyncio
+async def test_conversation_scope_key_and_deny_chat(monkeypatch):
+    """Cover _conversation_scope_key when multi_user disabled and _deny_access for chat."""
+    _install_fakes(monkeypatch, has_telegram=False, multi_user_enabled=True)
+    app = app_module.CueApp()
+    app.user_access.set_role("u1", "readonly", actor_user_id="system")
+    msg = UnifiedMessage(platform="telegram", chat_id="c1", user_id="u1", text="hello")
+    resp = await app._handle_message(msg)
+    assert "Access denied" in resp.text
+    assert "chat" in resp.text
+
+    app2 = app_module.CueApp()
+    app2.config.multi_user_enabled = False
+    scope = app2._conversation_scope_key(msg)
+    assert scope == "c1"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_brain_raises(monkeypatch):
+    """Cover _handle_message when brain.chat raises generic exception."""
+    _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+
+    def _raise(_user_input, extra_context=""):  # noqa: ARG001
+        raise RuntimeError("llm error")
+
+    app.brain.chat = _raise
+    msg = UnifiedMessage(platform="telegram", chat_id="c1", user_id="u1", text="hi")
+    with pytest.raises(RuntimeError, match="llm error"):
+        await app._handle_message(msg)
+
+
+def test_format_task_list_empty_and_audit_errors(monkeypatch):
+    """Cover _format_task_list empty and _handle_audit_command errors."""
+    _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    assert app._format_task_list([]) == "No tasks in queue."
+
+    bad_msg = UnifiedMessage(platform="telegram", chat_id="c1", user_id="u1", text="/audit badtoken")
+    resp = app._handle_audit_command(bad_msg, ["badtoken"])
+    assert "Audit command error" in resp.text
+    unsupported = UnifiedMessage(platform="telegram", chat_id="c1", user_id="u1", text="")
+    resp2 = app._handle_audit_command(unsupported, ["limit=10", "unknown=1"])
+    assert "Unsupported audit filter" in resp2.text or "Audit command error" in resp2.text
+
+
+@pytest.mark.asyncio
+async def test_handle_users_command_list_role_remove(monkeypatch):
+    """Cover _handle_users_command list, role set, remove (self and not found)."""
+    _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    app.user_access.set_role("u-admin", "admin", actor_user_id="system")
+    msg = UnifiedMessage(platform="telegram", chat_id="c1", user_id="u-admin", text="")
+
+    list_resp = app._handle_users_command(msg, ["list"], "admin")
+    assert "User Access List" in list_resp.text
+    role_resp = app._handle_users_command(msg, ["role", "u2", "operator"], "admin")
+    assert "Set `u2`" in role_resp.text or "role" in role_resp.text
+    self_remove = app._handle_users_command(msg, ["remove", "u-admin"], "admin")
+    assert "cannot remove your own" in self_remove.text
+    not_found = app._handle_users_command(msg, ["remove", "nonexistent-user-99"], "admin")
+    assert "not found" in not_found.text or "Removed" in not_found.text
+
+
+@pytest.mark.asyncio
+async def test_handle_market_command_update_validate_and_exception(monkeypatch):
+    """Cover _handle_market_command update one, validate invalid, validate-registry invalid, exception."""
+    t = _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    app.user_access.set_role("u-admin", "admin", actor_user_id="system")
+    msg = UnifiedMessage(platform="telegram", chat_id="c1", user_id="u-admin", text="")
+
+    def _update_one(skill_id):
+        t.marketplace_updates.append(skill_id)
+        return {"skill_id": skill_id, "status": "up_to_date", "version": "1.0.0"}
+
+    def _validate_bad(_path):
+        return {"ok": False, "errors": ["invalid schema"], "warnings": [], "skill_name": ""}
+
+    def _validate_registry_bad():
+        return {"ok": False, "errors": ["index broken"], "skill_count": 0}
+
+    app.marketplace.update = _update_one
+    up_resp = app._handle_market_command(msg, ["update", "some_skill"])
+    assert "up-to-date" in up_resp.text or "some_skill" in up_resp.text
+
+    app.marketplace.validate_submission = _validate_bad
+    val_resp = app._handle_market_command(msg, ["validate", "/tmp/x"])
+    assert "invalid" in val_resp.text or "error" in val_resp.text.lower()
+
+    app.marketplace.validate_registry_index = _validate_registry_bad
+    reg_resp = app._handle_market_command(msg, ["validate-registry"])
+    assert "invalid" in reg_resp.text or "error" in reg_resp.text.lower()
+
+    def _search_raise(*a, **k):
+        raise RuntimeError("search failed")
+
+    app.marketplace.search = _search_raise
+    exc_resp = app._handle_market_command(msg, ["search", "x"])
+    assert "error" in exc_resp.text.lower() or "Marketplace" in exc_resp.text
+
+
+@pytest.mark.asyncio
+async def test_handle_workflow_command_disabled_show_template_run_error(monkeypatch):
+    """Cover _handle_workflow_command disabled, show, template not found, run error."""
+    _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    app.config.workflows_enabled = False
+    msg = UnifiedMessage(platform="telegram", chat_id="c1", user_id="u1", text="")
+    resp = await app._handle_workflow_command(msg, [])
+    assert "disabled" in resp.text
+
+    app.config.workflows_enabled = True
+    show_resp = await app._handle_workflow_command(msg, ["show", "demo"])
+    assert "Workflow" in show_resp.text and "demo" in show_resp.text
+    tmpl_resp = await app._handle_workflow_command(msg, ["template", "nonexistent"])
+    assert "not found" in tmpl_resp.text or "Template" in tmpl_resp.text
+    app.workflow_manager.template_path = lambda _: None
+    tmpl2 = await app._handle_workflow_command(msg, ["template", "x"])
+    assert "not found" in tmpl2.text
+
+    async def _run_fail(*a, **k):
+        raise RuntimeError("run failed")
+
+    app.workflow_manager.run_workflow = _run_fail
+    run_resp = await app._handle_workflow_command(msg, ["run", "demo"])
+    assert "error" in run_resp.text.lower() or "run failed" in run_resp.text
+
+
+def test_status_text_agent_tree_and_workflow_line(monkeypatch):
+    """Cover _status_text agent tree and workflow line formatting."""
+    _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    app.multi_agent_orchestrator.status_snapshot = lambda: {
+        "enabled": True,
+        "max_concurrent": 2,
+        "active_parents": 1,
+        "active_sub_agents": 1,
+        "subagent_requests": 1,
+        "subagent_estimated_cost_usd": 0.01,
+        "parents": [
+            {
+                "parent_agent_id": "p1",
+                "status": "running",
+                "parent_task": "Do thing",
+                "sub_agents": [
+                    {"agent_id": "c1", "status": "running"},
+                    {"agent_id": "c2", "status": "done"},
+                ],
+            }
+        ],
+    }
+    text = app._status_text()
+    assert "Agent tree:" in text
+    assert "p1" in text
+    assert "workflow" in text.lower()
+
+
+def test_handle_tool_event_risk_exception_and_error_summary(monkeypatch):
+    """Cover _handle_tool_event when risk classifier raises and event has error."""
+    _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+
+    def _assess_raise(*a, **k):
+        raise RuntimeError("classifier failed")
+
+    app.risk_classifier.assess = _assess_raise
+    app._handle_tool_event({"tool_name": "x", "arguments": {"path": "y"}, "outcome": "success", "duration_ms": 1})
+    assert app._action_timeline[-1]["risk_level"] == "unknown"
+    app._handle_tool_event(
+        {"tool_name": "z", "arguments": {}, "error": "tool failed", "outcome": "error", "duration_ms": 0}
+    )
+    assert app._action_timeline[-1]["summary"] == "tool failed"
+
+
+def test_append_timeline_overflow_and_record_audit_exception(monkeypatch):
+    """Cover _append_timeline_event overflow and _record_audit_event exception path."""
+    _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    app._timeline_limit = 3
+    for i in range(5):
+        app._append_timeline_event(
+            {
+                "event_type": "x",
+                "tool_name": f"t{i}",
+                "risk_level": "low",
+                "duration_ms": 0,
+                "outcome": "ok",
+                "summary": "",
+            }
+        )
+    assert len(app._action_timeline) == 3
+
+    def _record_raise(*a, **k):
+        raise RuntimeError("audit db error")
+
+    app.audit_trail.record_event = _record_raise
+    app._record_audit_event(event_type="test", action="test_action", outcome="ok")
+    # Should not raise; logs and swallows
+
+
+def test_handle_router_event_hard_stop_and_handle_loop_event(monkeypatch):
+    """Cover _handle_router_event llm_budget_hard_stop and _handle_loop_event."""
+    t = _install_fakes(monkeypatch, has_telegram=True)
+    app = app_module.CueApp()
+    app._handle_router_event(
+        {
+            "event": "llm_budget_hard_stop",
+            "monthly_spend_usd": 51.0,
+            "hard_stop_threshold_usd": 50.0,
+        }
+    )
+    assert any(e["title"] and "hard" in e["title"].lower() for e in t.notification_events)
+
+    app._handle_loop_event(
+        {"event": "task_completion", "priority": "high", "title": "Done", "body": "Task 1 done", "source": "ralph"}
+    )
+    assert any(e["event_type"] == "loop" for e in [app._action_timeline[-1]])
+    assert any(e["category"] == "task_completion" for e in t.notification_events)
+    assert any(e[0] == "loop.task_completion" for e in t.workflow_events)
+
+
+@pytest.mark.asyncio
+async def test_notify_provider_outage_no_telegram(monkeypatch):
+    """Cover _notify_provider_outage when telegram is None."""
+    _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    await app._notify_provider_outage({"openai": "down"})
+    assert app.telegram is None
+
+
+def test_format_uptime_human(monkeypatch):
+    """Cover _format_uptime_human."""
+    assert app_module.CueApp._format_uptime_human(0) == "0s"
+    assert "d" in app_module.CueApp._format_uptime_human(90061)
+    assert "h" in app_module.CueApp._format_uptime_human(3661)
+
+
+@pytest.mark.asyncio
+async def test_start_unknown_mode_runs_finally(monkeypatch):
+    """Cover start() unknown mode (logs error) and finally block (shutdown)."""
+    t = _install_fakes(monkeypatch, has_telegram=False, heartbeat_enabled=False)
+    app = app_module.CueApp()
+    app.config.healthcheck_enabled = False
+    await app.start(mode="unknown")
+    # Unknown mode logs error then runs finally (shutdown)
+    assert t.heartbeat_stop == 1
+
+
+@pytest.mark.asyncio
+async def test_run_scheduled_workflow(monkeypatch):
+    """Cover _run_scheduled_workflow."""
+    t = _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    app.config.workflows_enabled = True
+    await app._run_scheduled_workflow("demo", "0 9 * * *")
+    assert any(r[0] == "demo" for r in t.workflow_runs)
+
+
+@pytest.mark.asyncio
+async def test_shutdown(monkeypatch):
+    """Cover _shutdown."""
+    t = _install_fakes(monkeypatch, has_telegram=True)
+    app = app_module.CueApp()
+    await app._shutdown()
+    assert t.heartbeat_stop == 1
+    assert t.telegram_stop == 1
+    assert t.notification_flushes
