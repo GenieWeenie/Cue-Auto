@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from environment.executor import AsyncLocalExecutor
 from protocol.state_manager import StateManager
@@ -61,7 +61,24 @@ class CueApp:
         # --- Memory (EAP StateManager) ---
         self.state_manager = StateManager(db_path=self.config.state_db_path)
         self.task_queue = TaskQueue(db_path=self.config.state_db_path)
-        self.audit_trail = AuditTrail(db_path=self.config.state_db_path)
+        audit_on_record: Callable[[dict[str, Any]], None] | None = None
+        export_type = getattr(self.config, "audit_export_type", "none") or "none"
+        if export_type.strip().lower() not in ("none", ""):
+            config = self.config
+
+            def _audit_export(event: dict[str, Any]) -> None:
+                from cue_agent.audit.export import export_audit_event
+
+                export_audit_event(
+                    event,
+                    export_type=config.audit_export_type,
+                    webhook_url=getattr(config, "audit_export_webhook_url", "") or "",
+                    s3_bucket=getattr(config, "audit_export_s3_bucket", "") or "",
+                    s3_prefix=getattr(config, "audit_export_s3_prefix", "audit") or "audit",
+                )
+
+            audit_on_record = _audit_export
+        self.audit_trail = AuditTrail(db_path=self.config.state_db_path, on_record=audit_on_record)
         self.user_access = UserAccessStore(db_path=self.config.state_db_path)
         self._bootstrap_access_roles()
 

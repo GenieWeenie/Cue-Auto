@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from cue_agent.audit import AuditQuery, AuditTrail
 
@@ -97,3 +98,28 @@ def test_audit_export_formats():
     md_name, md_payload, _ = AuditTrail.export_records(rows, "markdown")
     assert md_name.endswith(".md")
     assert "CueAgent Audit Export" in md_payload.decode("utf-8")
+
+
+def test_audit_trail_on_record_callback_called():
+    """When on_record is provided, it is called with the event dict after insert."""
+    received: list[dict] = []
+
+    def capture(event: dict) -> None:
+        received.append(event)
+
+    trail = AuditTrail(":memory:", on_record=capture)
+    trail.record_event(
+        event_type="approval",
+        action="approved",
+        user_id="u1",
+        details={"role": "admin"},
+        timestamp_utc="2026-02-28T12:00:00+00:00",
+    )
+    # Callback runs in a daemon thread; give it a moment
+    time.sleep(0.05)
+    assert len(received) == 1
+    assert received[0]["event_type"] == "approval"
+    assert received[0]["action"] == "approved"
+    assert received[0]["user_id"] == "u1"
+    assert received[0]["details"] == {"role": "admin"}
+    assert "id" in received[0] and received[0]["id"] >= 1
