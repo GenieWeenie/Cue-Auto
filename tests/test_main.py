@@ -65,3 +65,42 @@ def test_main_export_audit_to_file(monkeypatch, capsys, tmp_path: Path):
     assert output_path.exists()
     assert "CueAgent Audit Export" in output_path.read_text(encoding="utf-8")
     assert "Exported" in capsys.readouterr().out
+
+
+def test_main_create_skill_pack(monkeypatch, capsys, tmp_path: Path):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cue-agent",
+            "create-skill",
+            "daily_brief",
+            "--skills-dir",
+            str(tmp_path),
+        ],
+    )
+
+    main_module.main()
+
+    assert (tmp_path / "daily_brief" / "skill.py").exists()
+    assert "Created skill scaffold" in capsys.readouterr().out
+
+
+def test_main_create_skill_simple(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cue-agent",
+            "create-skill",
+            "ops-note",
+            "--skills-dir",
+            str(tmp_path),
+            "--style",
+            "simple",
+        ],
+    )
+
+    main_module.main()
+
+    assert (tmp_path / "ops_note.py").exists()

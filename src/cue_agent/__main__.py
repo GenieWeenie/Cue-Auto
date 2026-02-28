@@ -11,6 +11,28 @@ def main() -> None:
         prog="cue-agent",
         description="CueAgent — Autonomous AI agent built on the Efficient Agent Protocol",
     )
+    subparsers = parser.add_subparsers(dest="command")
+    create_skill_parser = subparsers.add_parser(
+        "create-skill",
+        help="Generate a new skill scaffold",
+    )
+    create_skill_parser.add_argument("name", help="Skill name (will be normalized to snake_case)")
+    create_skill_parser.add_argument(
+        "--skills-dir",
+        default="skills",
+        help="Target skills directory (default: skills)",
+    )
+    create_skill_parser.add_argument(
+        "--style",
+        choices=["pack", "simple"],
+        default="pack",
+        help="Scaffold style (default: pack)",
+    )
+    create_skill_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing scaffold path if it exists",
+    )
     parser.add_argument(
         "--mode",
         choices=["polling", "webhook", "loop", "once"],
@@ -41,6 +63,18 @@ def main() -> None:
     parser.add_argument("--audit-start", default="", help="Audit start time/date (ISO or YYYY-MM-DD)")
     parser.add_argument("--audit-end", default="", help="Audit end time/date (ISO or YYYY-MM-DD)")
     args = parser.parse_args()
+
+    if args.command == "create-skill":
+        from cue_agent.skills.scaffold import create_skill_scaffold
+
+        created = create_skill_scaffold(
+            args.name,
+            skills_dir=args.skills_dir,
+            style=args.style,
+            force=args.force,
+        )
+        print(f"Created skill scaffold at {created}")
+        return
 
     if args.export_audit_format:
         from cue_agent.audit import AuditQuery, AuditTrail

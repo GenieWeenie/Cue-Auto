@@ -338,6 +338,18 @@ Delivery behavior is configurable:
 
 Skills extend CueAgent with new capabilities. Drop files into the `skills/` directory and they're auto-discovered at startup. With hot-reload enabled (default), new or modified skills are picked up within 2 seconds without restarting.
 
+### Skill SDK Quickstart
+
+```bash
+# Generate a skill pack scaffold
+cue-agent create-skill daily_brief
+
+# Generate a single-file scaffold
+cue-agent create-skill ops_note --style simple
+```
+
+For full SDK docs (manifest/schema patterns, prompt/config patterns, testing harness, typing, troubleshooting), see [`docs/skills-sdk.md`](docs/skills-sdk.md).
+
 ### Simple Skill (single `.py` file)
 
 ```python
@@ -386,6 +398,29 @@ skills/research_topic/
 ```
 
 The loader reads `prompt.md` as a string and `config.yaml` as a `key: value` dict, attaching both to the loaded skill metadata.
+
+### Isolated Skill Testing
+
+Use the testing harness to validate a skill without running CueAgent:
+
+```python
+from cue_agent.skills.testing import SkillTestHarness, MockSkillContext
+
+harness = SkillTestHarness.from_path("skills/research_topic/skill.py")
+result = harness.run_tool(
+    "run",
+    task="prepare release brief",
+    context=MockSkillContext(user_id="u1", chat_id="ops-room"),
+)
+print(result)
+```
+
+### Example Skills
+
+Realistic examples are included in `skills/examples/`:
+- `research_brief.py`
+- `release_readiness.py`
+- `incident_timeline.py`
 
 ### Hot Reload
 

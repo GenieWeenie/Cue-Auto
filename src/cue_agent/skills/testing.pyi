@@ -1,0 +1,19 @@
+from dataclasses import dataclass
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+@dataclass
+class MockSkillContext:
+    user_id: str
+    chat_id: str
+    metadata: dict[str, Any]
+
+class SkillTestHarness:
+    def __init__(self, module: ModuleType) -> None: ...
+    @classmethod
+    def from_path(cls, path: str | Path) -> SkillTestHarness: ...
+    def manifest(self) -> dict[str, Any]: ...
+    def list_tools(self) -> list[str]: ...
+    def get_tool(self, name: str) -> object: ...
+    def run_tool(self, name: str, *, context: MockSkillContext | None = None, **kwargs: Any) -> Any: ...
