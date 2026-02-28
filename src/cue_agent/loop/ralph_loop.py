@@ -67,6 +67,7 @@ class RalphLoop:
         self._iteration_count = 0
         self._last_iteration_time: datetime | None = None
         self._current_task: str | None = None
+        self._consecutive_failures = 0
 
     async def run_forever(self) -> None:
         """Run the autonomous loop until stopped."""
@@ -75,14 +76,43 @@ class RalphLoop:
 
         while self._running:
             try:
+                if (
+                    self.config.loop_cooldown_after_failures > 0
+                    and self._consecutive_failures >= self.config.loop_cooldown_after_failures
+                ):
+                    logger.info(
+                        "Loop cooldown: %d consecutive failures, sleeping %ds",
+                        self._consecutive_failures,
+                        self.config.loop_cooldown_seconds,
+                    )
+                    await asyncio.sleep(self.config.loop_cooldown_seconds)
+                    self._consecutive_failures = 0
                 await self._iteration()
+                self._consecutive_failures = 0
             except Exception:
                 logger.exception("Loop iteration %d failed", self._iteration_count)
+                self._consecutive_failures += 1
             await asyncio.sleep(self.config.loop_interval_seconds)
 
     async def run_once(self) -> None:
         """Execute a single loop iteration."""
-        await self._iteration()
+        if (
+            self.config.loop_cooldown_after_failures > 0
+            and self._consecutive_failures >= self.config.loop_cooldown_after_failures
+        ):
+            logger.info(
+                "Loop cooldown: %d consecutive failures, sleeping %ds",
+                self._consecutive_failures,
+                self.config.loop_cooldown_seconds,
+            )
+            await asyncio.sleep(self.config.loop_cooldown_seconds)
+            self._consecutive_failures = 0
+        try:
+            await self._iteration()
+            self._consecutive_failures = 0
+        except Exception:
+            self._consecutive_failures += 1
+            raise
 
     def stop(self) -> None:
         """Signal the loop to stop after the current iteration."""

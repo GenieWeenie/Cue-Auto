@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,23 @@ try:
     import yaml  # type: ignore[import-untyped]
 except Exception:  # pragma: no cover - dependency guarded in runtime tests
     yaml = None
+
+
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
+
+def _substitute_variables(obj: Any, variables: dict[str, str]) -> Any:
+    """Recursively replace {{ VAR }} placeholders in string values (not keys)."""
+    if isinstance(obj, dict):
+        return {k: _substitute_variables(v, variables) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_substitute_variables(item, variables) for item in obj]
+    if isinstance(obj, str):
+        return _PLACEHOLDER_RE.sub(
+            lambda m: variables.get(m.group(1), ""),
+            obj,
+        )
+    return obj
 
 
 @dataclass(frozen=True)
@@ -54,20 +72,23 @@ class WorkflowLoader:
         ]
         return sorted(discovered)
 
-    def load_all(self) -> dict[str, WorkflowDefinition]:
+    def load_all(self, variables: dict[str, str] | None = None) -> dict[str, WorkflowDefinition]:
         workflows: dict[str, WorkflowDefinition] = {}
         for path in self.discover():
-            loaded = self.load_file(path)
+            loaded = self.load_file(path, variables=variables)
             workflows[loaded.name] = loaded
         return workflows
 
-    def load_file(self, path: Path) -> WorkflowDefinition:
+    def load_file(self, path: Path, variables: dict[str, str] | None = None) -> WorkflowDefinition:
         if yaml is None:
             raise RuntimeError("PyYAML is required for workflow loading. Install dependency `pyyaml`.")
         payload_obj = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(payload_obj, dict):
             raise ValueError(f"Workflow file must contain a YAML mapping: {path}")
         payload = dict(payload_obj)
+        if variables is None:
+            variables = {}
+        payload = _substitute_variables(payload, variables)
 
         name_value = payload.get("name")
         name = str(name_value).strip()

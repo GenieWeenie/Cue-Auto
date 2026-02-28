@@ -30,7 +30,7 @@ With coverage:
 pytest tests/ --cov=src/cue_agent --cov-report=term-missing
 ```
 
-CI enforces coverage ≥80% (`--cov-fail-under=80`).
+CI enforces coverage ≥82% (`--cov-fail-under=82`).
 
 ## Linting and type checking
 
@@ -52,7 +52,7 @@ ruff format src tests
 
 - Prefer a short-lived branch per change (e.g. `fix/telegram-retry`, `docs/contributing`).
 - Open a PR against `master` (or `main` if the default branch changes).
-- **All PRs must pass the Quality Gates CI** (Ruff, mypy, pytest with coverage ≥80%) before merge. Fix any new Ruff or mypy issues before pushing.
+- **All PRs must pass the Quality Gates CI** (Ruff, mypy, pytest with coverage ≥82%) before merge. Fix any new Ruff or mypy issues before pushing.
 - Keep PRs focused; split large changes into smaller ones where possible.
 
 ## Configuration
@@ -85,3 +85,29 @@ The **EAP** (efficient-agent-protocol) dependency is currently pinned by **commi
 1. In `pyproject.toml`, change the EAP dependency git ref from the commit hash to the tag (e.g. `@v0.1.0`).
 2. Run `pip install -e ".[dev]"` to install the updated dependency.
 3. Run the test suite: `pytest tests/ -v`.
+
+## Releases
+
+To cut a release (e.g. v0.1.0 or v0.2.0):
+
+1. **Update CHANGELOG.md**
+   - Move the contents of the [Unreleased] section into a new version section (e.g. `## [0.2.0]`).
+   - Add a new empty [Unreleased] section at the top (you can add a note like "No unreleased changes yet." if desired).
+   - Update the compare links at the bottom: set `[Unreleased]` to `...compare/vX.Y.Z...HEAD` (using the new tag you are about to create) and add a link for the new version, e.g. `[0.2.0]: ...releases/tag/v0.2.0`.
+
+2. **Create a git tag**
+   ```bash
+   git tag -a v0.2.0 -m "Release 0.2.0"
+   ```
+   (Use v0.1.0 or the appropriate version.)
+
+3. **Push the tag**
+   ```bash
+   git push origin v0.2.0
+   ```
+
+4. **GitHub Release**
+   - On GitHub: go to **Releases** → **Draft a new release**.
+   - Choose the tag you just pushed (e.g. `v0.2.0`).
+   - Paste the release notes from CHANGELOG.md for that version into the description.
+   - Publish the release.
