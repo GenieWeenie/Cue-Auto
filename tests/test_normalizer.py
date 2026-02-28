@@ -34,3 +34,21 @@ def test_normalize_telegram_no_message():
     update.effective_message = None
     msg = MessageNormalizer.normalize_telegram(update)
     assert msg is None
+
+
+def test_normalize_telegram_document_attachment():
+    update = _make_telegram_update("")
+    update.effective_message.text = None
+    update.effective_message.caption = None
+    update.effective_message.document = MagicMock(
+        file_id="doc-1",
+        file_name="report.txt",
+        mime_type="text/plain",
+    )
+    update.effective_message.photo = []
+
+    msg = MessageNormalizer.normalize_telegram(update)
+    assert msg is not None
+    assert msg.text == "/file"
+    assert msg.raw["attachment"]["type"] == "document"
+    assert msg.raw["attachment"]["file_name"] == "report.txt"

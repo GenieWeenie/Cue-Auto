@@ -38,9 +38,11 @@ async def test_approval_gateway_request_then_callback():
     assert "APPROVAL REQUIRED" in bot.sent[0]["text"]
     keyboard = bot.sent[0]["reply_markup"]
     approve_data = keyboard.inline_keyboard[0][0].callback_data
-    deny_data = keyboard.inline_keyboard[0][1].callback_data
+    reject_data = keyboard.inline_keyboard[0][1].callback_data
+    details_data = keyboard.inline_keyboard[0][2].callback_data
     assert approve_data == f"approve:{approval_id}"
-    assert deny_data == f"deny:{approval_id}"
+    assert reject_data == f"reject:{approval_id}"
+    assert details_data == f"details:{approval_id}"
 
 
 @pytest.mark.asyncio
@@ -49,6 +51,22 @@ async def test_approval_gateway_timeout_defaults_deny():
     decision = await gateway.request_approval("Do risky action", "step-2", timeout=0.01)
     assert decision is False
     assert gateway._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_approval_gateway_lists_pending_details():
+    bot = _FakeBot()
+    gateway = ApprovalGateway(bot=bot, admin_chat_id=999)
+
+    request_task = asyncio.create_task(gateway.request_approval("Delete file?", "step-3", timeout=1))
+    await asyncio.sleep(0)
+    rows = gateway.pending_approvals()
+    assert len(rows) == 1
+    assert rows[0]["step_id"] == "step-3"
+    approval_id = rows[0]["approval_id"]
+    await gateway.handle_callback(approval_id, approved=True)
+    _ = await request_task
+    assert gateway.pending_approvals() == []
 
 
 @pytest.mark.asyncio

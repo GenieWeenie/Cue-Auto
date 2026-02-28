@@ -28,3 +28,6 @@ class UnifiedResponse(BaseModel):
     chat_id: str
     reply_to_message_id: str | None = None
     parse_mode: str = "Markdown"
+    ui_mode: str | None = None
+    document_filename: str | None = None
+    document_bytes: bytes | None = None

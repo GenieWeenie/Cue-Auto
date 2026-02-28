@@ -41,7 +41,7 @@ CueAgent is organized into 6 blocks, all wired together by the `CueApp` orchestr
 ### Comms
 
 - **TelegramGateway** — Telegram bot interface using `python-telegram-bot`. Supports polling and webhook modes.
-- **ApprovalGateway** — Sends inline-keyboard approve/deny prompts to the admin chat for high-risk actions.
+- **ApprovalGateway** — Sends inline-keyboard approval prompts to the admin chat for high-risk actions with Approve/Reject/Details controls.
 - **MessageNormalizer** — Converts platform-specific messages into `UnifiedMessage` format.
 
 ### Memory
@@ -215,7 +215,7 @@ For full production instructions (Docker, systemd, Railway/Fly.io/DigitalOcean),
 python -m cue_agent --mode polling
 ```
 
-Chat with CueAgent directly through Telegram. High-risk actions trigger inline approve/deny buttons.
+Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
 
 ### Autonomous Loop
 
@@ -233,18 +233,26 @@ The Ralph loop runs autonomously — picking tasks, planning, executing, and ver
 
 Set `CUE_LOOP_ENABLED=true` in `.env` and run in polling mode. The Telegram interface and autonomous loop run concurrently — you can chat with the agent while it works autonomously in the background.
 
-### Task Queue Commands (Telegram)
+### Telegram Commands
 
-Use these in Telegram chat to manage persistent queued work:
+Use these in Telegram chat:
 
-- `/usage` — show monthly provider usage, estimated spend, and budget thresholds
+- `/help` — command center with quick navigation actions
+- `/status` — runtime health snapshot
+- `/skills` — loaded skill summary
+- `/settings` — runtime settings snapshot
+- `/approve` — pending approval queue
+- `/usage` — monthly provider usage, estimated spend, and budget thresholds
 - `/tasks` — list queued tasks
 - `/tasks pending|blocked|in_progress|failed|done|all`
+- `/tasks download|export|json` — export tasks as a JSON attachment
 - `/task add [p1|p2|p3|p4] <title>`
 - `/task sub <parent_id> [p1|p2|p3|p4] <title>`
 - `/task done <task_id>`
 - `/task depend <task_id> <depends_on_task_id>`
 - `/task retry <task_id>`
+
+Upload files directly in Telegram to attach context; attachment metadata is normalized and routed through the unified message layer.
 
 ### Notification Delivery
 

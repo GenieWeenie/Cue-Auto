@@ -70,6 +70,7 @@ def _install_fakes(
             self.vector_memory_consolidation_keep_recent = 20
             self.vector_memory_consolidation_max_items = 120
             self.high_risk_tools = ["run_shell"]
+            self.require_approval = True
             self.approval_required_levels = ["high", "critical"]
             self.risk_rules_path = "skills/risk_rules.json"
             self.risk_sandbox_dry_run = False
@@ -86,6 +87,7 @@ def _install_fakes(
             self.notification_timezone = "UTC"
             self.notification_hourly_digest_cron = "0 * * * *"
             self.notification_daily_digest_cron = "0 8 * * *"
+            self.search_provider = "auto"
             self.loop_enabled = loop_enabled
             self.loop_interval_seconds = 1
             self.task_queue_enabled = True
@@ -350,6 +352,15 @@ def _install_fakes(
         async def request_approval(self, action_description: str, step_id: str):  # noqa: ARG002
             return True
 
+        def pending_approvals(self):
+            return [
+                {
+                    "approval_id": "approval_step_1",
+                    "step_id": "step-1",
+                    "action_description": "Run dangerous command",
+                }
+            ]
+
     class FakeSkillLoader:
         def __init__(self, skills_dir):  # noqa: ARG002
             pass
@@ -485,6 +496,47 @@ async def test_app_task_commands(monkeypatch):
     usage_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u1", text="/usage")
     usage_response = await app._handle_message(usage_msg)
     assert "Total estimated spend" in usage_response.text
+
+    status_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u1", text="/status")
+    status_response = await app._handle_message(status_msg)
+    assert "CueAgent Status" in status_response.text
+    assert status_response.ui_mode == "status"
+
+    skills_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u1", text="/skills")
+    skills_response = await app._handle_message(skills_msg)
+    assert "Skills" in skills_response.text
+    assert skills_response.ui_mode == "skills"
+
+    settings_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u1", text="/settings")
+    settings_response = await app._handle_message(settings_msg)
+    assert "Settings Snapshot" in settings_response.text
+    assert settings_response.ui_mode == "settings"
+
+    approve_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u1", text="/approve")
+    approve_response = await app._handle_message(approve_msg)
+    assert "Approval gateway not configured." in approve_response.text
+    assert approve_response.ui_mode == "approve"
+
+    download_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u1", text="/tasks download")
+    download_response = await app._handle_message(download_msg)
+    assert download_response.document_filename == "cue-agent-tasks.json"
+    assert download_response.document_bytes is not None
+
+    file_msg = UnifiedMessage(
+        platform="telegram",
+        chat_id="chat-1",
+        user_id="u1",
+        text="/file",
+        raw={
+            "attachment": {
+                "type": "document",
+                "file_name": "report.txt",
+                "mime_type": "text/plain",
+            }
+        },
+    )
+    file_response = await app._handle_message(file_msg)
+    assert "File Received" in file_response.text
 
 
 @pytest.mark.asyncio

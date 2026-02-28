@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
 from datetime import datetime, timezone
@@ -144,7 +145,7 @@ class CueApp:
             with correlation_context(new_correlation_id("tg")):
                 return await self._handle_message(msg)
 
-        command_response = self._handle_task_commands(msg)
+        command_response = self._handle_commands(msg)
         if command_response is not None:
             return command_response
 
@@ -186,7 +187,7 @@ class CueApp:
         self.vector_memory.add_turn(msg.chat_id, "assistant", response_text)
         return UnifiedResponse(text=response_text, chat_id=msg.chat_id)
 
-    def _handle_task_commands(self, msg: UnifiedMessage) -> UnifiedResponse | None:
+    def _handle_commands(self, msg: UnifiedMessage) -> UnifiedResponse | None:
         text = msg.text.strip()
         if not text.startswith("/"):
             return None
@@ -195,7 +196,40 @@ class CueApp:
         command = parts[0].lower()
 
         try:
+            if command == "/help":
+                return UnifiedResponse(text=self._help_text(), chat_id=msg.chat_id, ui_mode="help")
+
+            if command == "/status":
+                return UnifiedResponse(text=self._status_text(), chat_id=msg.chat_id, ui_mode="status")
+
+            if command == "/skills":
+                return UnifiedResponse(text=self._skills_text(), chat_id=msg.chat_id, ui_mode="skills")
+
+            if command == "/settings":
+                return UnifiedResponse(text=self._settings_text(), chat_id=msg.chat_id, ui_mode="settings")
+
+            if command == "/approve":
+                return UnifiedResponse(text=self._approve_text(), chat_id=msg.chat_id, ui_mode="approve")
+
+            if command == "/file":
+                return UnifiedResponse(text=self._file_upload_text(msg), chat_id=msg.chat_id)
+
             if command == "/tasks":
+                mode = parts[1].lower() if len(parts) > 1 else ""
+                if mode in {"download", "export", "json"}:
+                    tasks = self.task_queue.list_tasks(status=None, limit=self.config.task_queue_max_list)
+                    payload = {
+                        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                        "task_count": len(tasks),
+                        "tasks": tasks,
+                    }
+                    return UnifiedResponse(
+                        text=f"Exported {len(tasks)} task(s) as JSON.",
+                        chat_id=msg.chat_id,
+                        ui_mode="tasks",
+                        document_filename="cue-agent-tasks.json",
+                        document_bytes=json.dumps(payload, indent=2, ensure_ascii=True).encode("utf-8"),
+                    )
                 status = parts[1].lower() if len(parts) > 1 else None
                 if status in {"all", "*"}:
                     status = None
@@ -203,6 +237,7 @@ class CueApp:
                 return UnifiedResponse(
                     text=self._format_task_list(tasks),
                     chat_id=msg.chat_id,
+                    ui_mode="tasks",
                 )
 
             if command == "/usage":
@@ -304,12 +339,110 @@ class CueApp:
         return (
             "Task commands:\n"
             "- /usage\n"
+            "- /status\n"
+            "- /skills\n"
+            "- /settings\n"
+            "- /approve\n"
             "- /tasks [status|all]\n"
+            "- /tasks download\n"
             "- /task add [p1|p2|p3|p4] <title>\n"
             "- /task sub <parent_id> [p1|p2|p3|p4] <title>\n"
             "- /task done <task_id>\n"
             "- /task depend <task_id> <depends_on_task_id>\n"
             "- /task retry <task_id>"
+        )
+
+    def _help_text(self) -> str:
+        return (
+            "*CueAgent Command Center*\n\n"
+            "- `/help` Show this menu\n"
+            "- `/status` Runtime health and queue summary\n"
+            "- `/tasks [status|all]` Task queue view\n"
+            "- `/tasks download` Download queue JSON export\n"
+            "- `/skills` Loaded skills and tool counts\n"
+            "- `/usage` Provider usage and spend\n"
+            "- `/approve` Pending approval requests\n"
+            "- `/settings` Runtime settings snapshot"
+        )
+
+    def _status_text(self) -> str:
+        status = self._build_health_status()
+        providers = status.get("providers", {})
+        loop = status.get("loop", {})
+        queue = status.get("queue", {})
+        notifications = status.get("notifications", {})
+        memory = status.get("memory", {})
+
+        provider_line = ", ".join(f"{k}:{v}" for k, v in providers.items()) if isinstance(providers, dict) else "n/a"
+        queue_stats = queue.get("task_queue", {}) if isinstance(queue, dict) else {}
+        queue_line = ", ".join(f"{k}={v}" for k, v in queue_stats.items()) if isinstance(queue_stats, dict) else "n/a"
+        return (
+            "*CueAgent Status*\n"
+            f"- Time (UTC): `{status.get('timestamp_utc', 'n/a')}`\n"
+            f"- Loop: `enabled={loop.get('enabled', False)}` `running={loop.get('running', False)}`\n"
+            f"- Providers: {provider_line}\n"
+            f"- Queue: {queue_line}\n"
+            f"- Notifications: `enabled={notifications.get('enabled', False)}` "
+            f"`mode={notifications.get('mode', 'n/a')}` `queued={notifications.get('queued', 0)}`\n"
+            f"- Memory: `vector_enabled={memory.get('vector_enabled', False)}` "
+            f"`vector_available={memory.get('vector_available', False)}`"
+        )
+
+    def _skills_text(self) -> str:
+        lines = ["*Skills*"]
+        names = self.actions.skill_names
+        if not names:
+            lines.append("- No skills loaded.")
+        else:
+            lines.append(f"- Loaded: `{len(names)}`")
+            for name in names:
+                lines.append(f"- `{name}`")
+        lines.append(f"- Total tools: `{self.actions.tool_count}`")
+        return "\n".join(lines)
+
+    def _settings_text(self) -> str:
+        return (
+            "*Settings Snapshot*\n"
+            f"- Loop enabled: `{self.config.loop_enabled}` interval=`{self.config.loop_interval_seconds}s`\n"
+            f"- Task queue: `{self.config.task_queue_enabled}` max_list=`{self.config.task_queue_max_list}`\n"
+            f"- Approval required: `{self.config.require_approval}` levels=`{self.config.approval_required_levels}`\n"
+            f"- Notifications: `enabled={self.config.notifications_enabled}` "
+            f"`mode={self.config.notification_delivery_mode}`\n"
+            f"- Quiet hours: `{self.config.notification_quiet_hours_start}:00-{self.config.notification_quiet_hours_end}:00` "
+            f"{self.config.notification_timezone}\n"
+            f"- Search provider: `{self.config.search_provider}`"
+        )
+
+    def _approve_text(self) -> str:
+        if self.approval_gateway is None:
+            return "Approval gateway not configured."
+
+        pending = self.approval_gateway.pending_approvals()
+        if not pending:
+            return "*Pending Approvals*\n- None."
+
+        lines = ["*Pending Approvals*"]
+        for row in pending[:20]:
+            lines.append(f"- `{row['approval_id']}` step=`{row['step_id']}` {row['action_description'][:120]}")
+        extra = len(pending) - 20
+        if extra > 0:
+            lines.append(f"- ...and {extra} more")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _file_upload_text(msg: UnifiedMessage) -> str:
+        attachment = msg.raw.get("attachment")
+        if not isinstance(attachment, dict):
+            return "No file attachment detected."
+        name = str(attachment.get("file_name", "uploaded-file"))
+        kind = str(attachment.get("type", "file"))
+        mime = str(attachment.get("mime_type", ""))
+        return (
+            "*File Received*\n"
+            f"- Type: `{kind}`\n"
+            f"- Name: `{name}`\n"
+            f"- MIME: `{mime}`\n\n"
+            "Tip: use `/tasks download` to receive a JSON export."
         )
 
     def _notify_event(self, *, category: str, priority: str, title: str, body: str, metadata: dict[str, Any]) -> None:

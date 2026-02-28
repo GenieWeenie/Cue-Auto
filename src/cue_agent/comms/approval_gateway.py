@@ -18,6 +18,7 @@ class ApprovalGateway:
         self._bot = bot
         self._admin_chat_id = admin_chat_id
         self._pending: dict[str, asyncio.Future[bool]] = {}
+        self._pending_details: dict[str, dict[str, str]] = {}
 
     async def request_approval(
         self,
@@ -31,7 +32,8 @@ class ApprovalGateway:
             [
                 [
                     InlineKeyboardButton("Approve", callback_data=f"approve:{approval_id}"),
-                    InlineKeyboardButton("Deny", callback_data=f"deny:{approval_id}"),
+                    InlineKeyboardButton("Reject", callback_data=f"reject:{approval_id}"),
+                    InlineKeyboardButton("Details", callback_data=f"details:{approval_id}"),
                 ]
             ]
         )
@@ -45,6 +47,10 @@ class ApprovalGateway:
 
         future: asyncio.Future[bool] = asyncio.get_event_loop().create_future()
         self._pending[approval_id] = future
+        self._pending_details[approval_id] = {
+            "step_id": step_id,
+            "action_description": action_description,
+        }
 
         try:
             return await asyncio.wait_for(future, timeout=timeout)
@@ -53,6 +59,7 @@ class ApprovalGateway:
             return False
         finally:
             self._pending.pop(approval_id, None)
+            self._pending_details.pop(approval_id, None)
 
     async def handle_callback(self, approval_id: str, approved: bool) -> None:
         """Resolve a pending approval future from a Telegram callback."""
@@ -60,3 +67,16 @@ class ApprovalGateway:
         if future and not future.done():
             future.set_result(approved)
             logger.info("Approval %s resolved: %s", approval_id, "approved" if approved else "denied")
+
+    def pending_approvals(self) -> list[dict[str, str]]:
+        items: list[dict[str, str]] = []
+        for approval_id in self._pending:
+            details = self._pending_details.get(approval_id, {})
+            items.append(
+                {
+                    "approval_id": approval_id,
+                    "step_id": details.get("step_id", ""),
+                    "action_description": details.get("action_description", ""),
+                }
+            )
+        return items
