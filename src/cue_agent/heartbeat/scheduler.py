@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, Coroutine
+from typing import Any, Callable, Coroutine
 
 from apscheduler import AsyncScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -34,7 +34,7 @@ class Heartbeat:
     async def add_cron_task(
         self,
         task_id: str,
-        func: Callable[..., Coroutine],
+        func: Callable[..., Coroutine[Any, Any, Any]],
         cron_expr: str,
     ) -> None:
         """Schedule an async function on a cron expression."""

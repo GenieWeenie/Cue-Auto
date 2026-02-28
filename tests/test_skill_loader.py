@@ -1,6 +1,5 @@
 """Tests for the skill loading system."""
 
-import os
 import tempfile
 from pathlib import Path
 

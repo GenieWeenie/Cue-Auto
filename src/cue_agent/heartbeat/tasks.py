@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-async def daily_summary(brain, memory, bot, admin_chat_id: int) -> None:
+async def daily_summary(brain: Any, memory: Any, bot: Any, admin_chat_id: int) -> None:
     """Generate and send a daily activity summary to the admin."""
     logger.info("Running daily summary task")
 
@@ -16,9 +17,7 @@ async def daily_summary(brain, memory, bot, admin_chat_id: int) -> None:
     if not context:
         summary = "No activity recorded in the last period."
     else:
-        summary = brain.chat(
-            f"Summarize the following agent activity in 3-5 bullet points:\n\n{context}"
-        )
+        summary = brain.chat(f"Summarize the following agent activity in 3-5 bullet points:\n\n{context}")
 
     await bot.send_message(
         chat_id=admin_chat_id,
@@ -28,7 +27,7 @@ async def daily_summary(brain, memory, bot, admin_chat_id: int) -> None:
     logger.info("Daily summary sent to admin")
 
 
-async def health_check(brain) -> None:
+async def health_check(brain: Any) -> None:
     """Run a quick health check on the LLM providers."""
     logger.info("Running health check")
     status = brain.router.health_check()

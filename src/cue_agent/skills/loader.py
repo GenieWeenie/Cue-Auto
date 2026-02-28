@@ -8,6 +8,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 class LoadedTool:
     name: str
     func: object
-    schema: dict
+    schema: dict[str, Any]
 
 
 @dataclass
@@ -25,7 +26,7 @@ class LoadedSkill:
     description: str
     tools: list[LoadedTool]
     prompt: str | None = None
-    config: dict | None = None
+    config: dict[str, str] | None = None
     source_path: Path = field(default_factory=lambda: Path("."))
 
 
@@ -160,9 +161,9 @@ class SkillLoader:
         return skill
 
     @staticmethod
-    def _parse_simple_yaml(path: Path) -> dict:
+    def _parse_simple_yaml(path: Path) -> dict[str, str]:
         """Parse a simple key: value YAML file without PyYAML dependency."""
-        config: dict = {}
+        config: dict[str, str] = {}
         for line in path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#"):

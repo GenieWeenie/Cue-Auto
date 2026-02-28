@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, cast
 
 from agent.agent_client import AgentClient
 from protocol.models import BatchedMacroRequest
@@ -33,7 +33,7 @@ class CueBrain:
         prompt = user_input
         if extra_context:
             prompt = f"{extra_context}\n\n{user_input}"
-        return self.client.chat(prompt)
+        return cast(str, self.client.chat(prompt))
 
     def plan(
         self,
@@ -54,4 +54,4 @@ class CueBrain:
         on_token: Optional[Callable[[str], None]] = None,
     ) -> str:
         """Stream a chat response token by token."""
-        return self.client.stream_chat(user_input, on_token=on_token)
+        return cast(str, self.client.stream_chat(user_input, on_token=on_token))

@@ -56,6 +56,21 @@ class CueConfig(BaseSettings):
     loop_enabled: bool = False
     loop_interval_seconds: int = 30
 
+    # --- Healthcheck endpoint ---
+    healthcheck_enabled: bool = True
+    healthcheck_host: str = "0.0.0.0"
+    healthcheck_port: int = 8080
+
+    # --- Retry / Resilience ---
+    retry_tool_attempts: int = 3
+    retry_telegram_attempts: int = 5
+    retry_llm_attempts: int = 3
+    retry_base_delay_seconds: float = 0.5
+    retry_max_delay_seconds: float = 5.0
+    retry_jitter_seconds: float = 0.2
+    circuit_breaker_failures: int = 3
+    circuit_breaker_cooldown_seconds: int = 300
+
     @property
     def has_openai(self) -> bool:
         return bool(self.openai_api_key)

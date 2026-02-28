@@ -5,15 +5,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 from environment.executor import AsyncLocalExecutor
 from protocol.state_manager import StateManager
 
 from cue_agent.actions.registry import ActionRegistry
 from cue_agent.brain.cue_brain import CueBrain
-from cue_agent.brain.llm_router import LLMRouter
+from cue_agent.brain.llm_router import LLMAllProvidersDownError, LLMRouter
 from cue_agent.brain.soul_loader import SoulLoader
 from cue_agent.comms.approval_gateway import ApprovalGateway
 from cue_agent.comms.models import UnifiedMessage, UnifiedResponse
@@ -21,8 +23,11 @@ from cue_agent.comms.telegram_gateway import TelegramGateway
 from cue_agent.config import CueConfig
 from cue_agent.heartbeat.scheduler import Heartbeat
 from cue_agent.heartbeat.tasks import daily_summary, health_check
+from cue_agent.health.server import HealthServer
 from cue_agent.loop.ralph_loop import RalphLoop
+from cue_agent.logging_utils import correlation_context, get_correlation_id, new_correlation_id, setup_logging
 from cue_agent.memory.session_memory import SessionMemory
+from cue_agent.retry_utils import backoff_delay_seconds
 from cue_agent.security.approval_gate import ApprovalGate
 from cue_agent.security.risk_classifier import RiskClassifier
 from cue_agent.skills.loader import SkillLoader
@@ -32,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 class CueApp:
-    def __init__(self):
+    def __init__(self) -> None:
         self.config = CueConfig()
         self._setup_logging()
 
@@ -103,21 +108,90 @@ class CueApp:
             approval_gate=self.approval_gate,
             config=self.config,
         )
+        self._queued_messages: list[dict[str, Any]] = []
+        self._provider_outage_notified = False
+        self.health_server = HealthServer(
+            host=self.config.healthcheck_host,
+            port=self.config.healthcheck_port,
+            status_provider=self._build_health_status,
+        )
 
     def _setup_logging(self) -> None:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
+        setup_logging()
 
     async def _handle_message(self, msg: UnifiedMessage) -> UnifiedResponse:
         """Process an incoming message through the brain."""
+        if not get_correlation_id():
+            with correlation_context(new_correlation_id("tg")):
+                return await self._handle_message(msg)
+
         self.memory.add_turn(msg.chat_id, "user", msg.text)
         context = self.memory.get_context(msg.chat_id)
-        response_text = self.brain.chat(msg.text, extra_context=context)
+        try:
+            response_text = self.brain.chat(msg.text, extra_context=context)
+            self._provider_outage_notified = False
+        except LLMAllProvidersDownError as exc:
+            self._queued_messages.append(
+                {
+                    "chat_id": msg.chat_id,
+                    "user_id": msg.user_id,
+                    "username": msg.username,
+                    "text": msg.text,
+                }
+            )
+            logger.warning(
+                "Queued message due to provider outage",
+                extra={
+                    "event": "message_queued_provider_outage",
+                    "queue_size": len(self._queued_messages),
+                    "provider_status": exc.provider_status,
+                },
+            )
+            if self.telegram and not self._provider_outage_notified:
+                await self._notify_provider_outage(exc.provider_status)
+                self._provider_outage_notified = True
+            response_text = (
+                "All LLM providers are temporarily unavailable. "
+                "Your message has been queued and the admin has been notified."
+            )
+
         self.memory.add_turn(msg.chat_id, "assistant", response_text)
         return UnifiedResponse(text=response_text, chat_id=msg.chat_id)
+
+    async def _notify_provider_outage(self, provider_status: dict[str, str]) -> None:
+        if self.telegram is None:
+            return
+
+        attempts = max(1, self.config.retry_telegram_attempts)
+        summary = "\n".join(f"- {name}: {status}" for name, status in provider_status.items())
+        text = f"Provider outage detected. Incoming messages are being queued.\n\nProvider status:\n{summary}"
+
+        for attempt in range(1, attempts + 1):
+            try:
+                await self.telegram.app.bot.send_message(
+                    chat_id=self.config.telegram_admin_chat_id,
+                    text=text,
+                )
+                return
+            except Exception as exc:
+                logger.warning(
+                    "Failed to notify admin of provider outage",
+                    extra={
+                        "event": "provider_outage_notify_failed",
+                        "attempt": attempt,
+                        "max_attempts": attempts,
+                        "error": str(exc),
+                    },
+                )
+                if attempt >= attempts:
+                    return
+                delay = backoff_delay_seconds(
+                    attempt,
+                    base_delay=self.config.retry_base_delay_seconds,
+                    max_delay=self.config.retry_max_delay_seconds,
+                    jitter=self.config.retry_jitter_seconds,
+                )
+                await asyncio.sleep(delay)
 
     async def _handle_approval(self, approval_id: str, approved: bool) -> None:
         """Route Telegram approval callbacks to the approval gateway."""
@@ -144,8 +218,15 @@ class CueApp:
     async def start(self, mode: str = "polling") -> None:
         """Start CueAgent in the specified mode."""
         logger.info("Starting CueAgent in '%s' mode", mode)
-        logger.info("Tools: %d total (%d skills: %s)",
-                     self.actions.tool_count, len(self.actions.skill_names), self.actions.skill_names)
+        logger.info(
+            "Tools: %d total (%d skills: %s)",
+            self.actions.tool_count,
+            len(self.actions.skill_names),
+            self.actions.skill_names,
+        )
+
+        if self.config.healthcheck_enabled:
+            await self.health_server.start()
 
         # Start heartbeat
         await self.heartbeat.start()
@@ -198,14 +279,14 @@ class CueApp:
 
         await self.telegram.start_polling()
 
-        tasks: list[asyncio.Task] = []
+        tasks: list[asyncio.Task[Any]] = []
         if self.config.loop_enabled:
             tasks.append(asyncio.create_task(self.ralph_loop.run_forever()))
 
         # Keep running until interrupted
         stop_event = asyncio.Event()
 
-        def _signal_handler():
+        def _signal_handler() -> None:
             stop_event.set()
 
         loop = asyncio.get_event_loop()
@@ -224,6 +305,23 @@ class CueApp:
         """Graceful shutdown."""
         self.ralph_loop.stop()
         await self.heartbeat.stop()
+        if self.config.healthcheck_enabled:
+            await self.health_server.stop()
         if self.telegram:
             await self.telegram.stop()
         logger.info("CueAgent shut down")
+
+    def _build_health_status(self) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "providers": self.router.health_status(),
+            "loop": {
+                "enabled": self.config.loop_enabled,
+                "running": self.ralph_loop.is_running,
+                "last_iteration_time": self.ralph_loop.last_iteration_time,
+            },
+            "queue": {
+                "queued_messages": len(self._queued_messages),
+            },
+        }

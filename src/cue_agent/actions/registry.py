@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from functools import partial
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Callable, Dict, cast
 
 from environment.tool_registry import ToolRegistry
 
@@ -32,14 +32,14 @@ logger = logging.getLogger(__name__)
 class ActionRegistry:
     """Wraps EAP ToolRegistry and registers CueAgent's built-in tools."""
 
-    def __init__(self, telegram_bot=None):
+    def __init__(self, telegram_bot: Any = None) -> None:
         self.eap_registry = ToolRegistry()
         self._skill_tools: dict[str, list[str]] = {}  # skill_name -> [tool_names]
         self._register_builtins(telegram_bot)
 
-    def _register_builtins(self, telegram_bot=None) -> None:
+    def _register_builtins(self, telegram_bot: Any = None) -> None:
         if telegram_bot is not None:
-            tg_func = partial(send_telegram, bot=telegram_bot)
+            tg_func: Callable[..., dict[str, Any]] = partial(send_telegram, bot=telegram_bot)
         else:
             tg_func = send_telegram
 
@@ -79,10 +79,10 @@ class ActionRegistry:
         self.load_skills({skill.name: skill})
 
     def get_hashed_manifest(self) -> Dict[str, str]:
-        return self.eap_registry.get_hashed_manifest()
+        return cast(Dict[str, str], self.eap_registry.get_hashed_manifest())
 
     def get_agent_manifest(self) -> Dict[str, Any]:
-        return self.eap_registry.get_agent_manifest()
+        return cast(Dict[str, Any], self.eap_registry.get_agent_manifest())
 
     @property
     def tool_count(self) -> int:

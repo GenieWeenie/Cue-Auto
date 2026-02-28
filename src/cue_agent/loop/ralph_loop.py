@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
 from environment.executor import AsyncLocalExecutor
@@ -13,9 +14,11 @@ from protocol.state_manager import StateManager
 from cue_agent.actions.registry import ActionRegistry
 from cue_agent.brain.cue_brain import CueBrain
 from cue_agent.config import CueConfig
+from cue_agent.logging_utils import correlation_context, new_correlation_id
 from cue_agent.loop.task_picker import TaskPicker
 from cue_agent.loop.verifier import Verifier
 from cue_agent.memory.session_memory import SessionMemory
+from cue_agent.retry_utils import backoff_delay_seconds
 from cue_agent.security.approval_gate import ApprovalGate
 
 logger = logging.getLogger(__name__)
@@ -47,6 +50,7 @@ class RalphLoop:
         self._verifier = Verifier(brain)
         self._running = False
         self._iteration_count = 0
+        self._last_iteration_time: datetime | None = None
 
     async def run_forever(self) -> None:
         """Run the autonomous loop until stopped."""
@@ -69,9 +73,31 @@ class RalphLoop:
         self._running = False
         logger.info("Ralph loop stop requested")
 
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    @property
+    def last_iteration_time(self) -> str | None:
+        if self._last_iteration_time is None:
+            return None
+        return self._last_iteration_time.isoformat()
+
     async def _iteration(self) -> None:
         self._iteration_count += 1
-        logger.info("=== Loop iteration %d ===", self._iteration_count)
+        self._last_iteration_time = datetime.now(timezone.utc)
+        corr_id = new_correlation_id(f"loop{self._iteration_count}")
+        with correlation_context(corr_id):
+            await self._run_iteration_body()
+
+    async def _run_iteration_body(self) -> None:
+        logger.info(
+            "Loop iteration started",
+            extra={
+                "event": "loop_iteration_started",
+                "iteration": self._iteration_count,
+            },
+        )
 
         # 1. ORIENT — read current state
         context = self._build_context()
@@ -93,7 +119,7 @@ class RalphLoop:
 
         # 5. EXECUTE — run via EAP's AsyncLocalExecutor
         run_id = f"loop_{self._iteration_count}_{uuid4().hex[:6]}"
-        result = await self.executor.execute_macro(macro, run_id=run_id)
+        result = await self._execute_macro_with_retry(macro, run_id=run_id)
 
         # 6. VERIFY — check success
         result_str = str(result) if result else "No output"
@@ -103,10 +129,40 @@ class RalphLoop:
         outcome = f"Task: {task}\nResult: {verification.summary}"
         self.memory.add_turn(LOOP_CHAT_ID, "assistant", outcome, run_id=run_id)
         logger.info(
-            "Iteration %d complete: %s",
-            self._iteration_count,
-            "SUCCESS" if verification.success else "FAILURE",
+            "Loop iteration complete",
+            extra={
+                "event": "loop_iteration_complete",
+                "iteration": self._iteration_count,
+                "run_id": run_id,
+                "success": verification.success,
+            },
         )
+
+    async def _execute_macro_with_retry(self, macro: Any, run_id: str) -> Any:
+        attempts = max(1, self.config.retry_tool_attempts)
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self.executor.execute_macro(macro, run_id=run_id)
+            except Exception as exc:
+                logger.warning(
+                    "Macro execution failed",
+                    extra={
+                        "event": "tool_execution_retry",
+                        "attempt": attempt,
+                        "max_attempts": attempts,
+                        "error": str(exc),
+                    },
+                )
+                if attempt >= attempts:
+                    raise
+
+                delay = backoff_delay_seconds(
+                    attempt,
+                    base_delay=self.config.retry_base_delay_seconds,
+                    max_delay=self.config.retry_max_delay_seconds,
+                    jitter=self.config.retry_jitter_seconds,
+                )
+                await asyncio.sleep(delay)
 
     def _build_context(self) -> str:
         """Assemble current state for task picking."""

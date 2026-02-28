@@ -18,6 +18,7 @@ from telegram.ext import (
 from cue_agent.comms.models import UnifiedMessage, UnifiedResponse
 from cue_agent.comms.normalizer import MessageNormalizer
 from cue_agent.config import CueConfig
+from cue_agent.logging_utils import correlation_context, new_correlation_id
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +43,36 @@ class TelegramGateway:
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
 
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
+        if update.message is None:
+            return
         await update.message.reply_text("CueAgent online. Send me a message.")
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
         unified = MessageNormalizer.normalize_telegram(update)
         if unified is None:
             return
+        if update.message is None:
+            return
 
-        logger.info("Received message from %s: %s", unified.username, unified.text[:80])
-        response = await self.on_message(unified)
-        await update.message.reply_text(response.text, parse_mode=response.parse_mode)
+        corr_id = new_correlation_id("tg")
+        with correlation_context(corr_id):
+            logger.info(
+                "Received Telegram message",
+                extra={
+                    "event": "telegram_message_received",
+                    "chat_id": unified.chat_id,
+                    "user_id": unified.user_id,
+                    "username": unified.username,
+                    "text_preview": unified.text[:80],
+                },
+            )
+            response = await self.on_message(unified)
+            await update.message.reply_text(response.text, parse_mode=response.parse_mode)
 
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
         query = update.callback_query
         if query is None:
             return
@@ -75,6 +94,8 @@ class TelegramGateway:
         logger.info("Starting Telegram bot in polling mode")
         await self.app.initialize()
         await self.app.start()
+        if self.app.updater is None:
+            raise RuntimeError("Telegram updater is unavailable for polling mode")
         await self.app.updater.start_polling()
         logger.info("Telegram bot polling started")
 

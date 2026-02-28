@@ -55,11 +55,7 @@ class SkillWatcher:
                 skill_file = item / "skill.py"
                 if skill_file.exists():
                     # Track the max mtime of all files in the pack
-                    pack_mtime = max(
-                        os.path.getmtime(f)
-                        for f in item.iterdir()
-                        if f.is_file()
-                    )
+                    pack_mtime = max(os.path.getmtime(f) for f in item.iterdir() if f.is_file())
                     result[str(item)] = pack_mtime
         return result
 

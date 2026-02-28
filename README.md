@@ -1,5 +1,7 @@
 # CueAgent
 
+[![CI](https://github.com/your-username/Cue-Auto/actions/workflows/ci.yml/badge.svg)](https://github.com/your-username/Cue-Auto/actions/workflows/ci.yml)
+
 Autonomous AI agent built on the [Efficient Agent Protocol (EAP)](https://github.com/GenieWeenie/efficient-agent-protocol). CueAgent combines a cascading multi-provider LLM brain, Telegram interface, hot-reloadable skills, and a Ralph-style autonomous loop into a single cohesive system.
 
 ## Architecture
@@ -77,6 +79,8 @@ An autonomous outer loop inspired by [ralph-wiggum](https://github.com/ghuntley/
 
 ```
 Cue-Auto/
+├── Dockerfile
+├── docker-compose.yml
 ├── src/cue_agent/
 │   ├── app.py                 # Orchestrator — wires all blocks together
 │   ├── config.py              # CueConfig (pydantic-settings, .env loading)
@@ -106,6 +110,8 @@ Cue-Auto/
 │   ├── heartbeat/
 │   │   ├── scheduler.py       # APScheduler wrapper
 │   │   └── tasks.py           # Scheduled task implementations
+│   ├── health/
+│   │   └── server.py          # Lightweight HTTP health endpoint (/healthz)
 │   └── skills/
 │       ├── loader.py          # Discovers and loads skills
 │       └── watcher.py         # Filesystem polling for hot-reload
@@ -114,6 +120,8 @@ Cue-Auto/
 ├── tests/
 ├── SOUL.md                    # Agent identity and personality
 ├── .env.example               # All configuration variables
+├── .env.production.example    # Production-ready Docker/systemd template
+├── docs/deployment.md         # Docker, systemd, and cloud deployment guide
 └── pyproject.toml
 ```
 
@@ -171,6 +179,22 @@ python -m cue_agent --check-config
 ```
 
 This prints the status of all providers, loaded skills, and feature flags.
+
+### One-command Docker Deploy
+
+```bash
+cp .env.production.example .env.production
+# edit .env.production with your secrets
+docker compose up -d --build
+```
+
+Health endpoint:
+
+```bash
+curl http://localhost:8080/healthz
+```
+
+For full production instructions (Docker, systemd, Railway/Fly.io/DigitalOcean), see [`docs/deployment.md`](docs/deployment.md).
 
 ## Running
 
@@ -309,6 +333,9 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 | `CUE_DAILY_SUMMARY_CRON` | `0 8 * * *` | Cron for daily summary |
 | `CUE_LOOP_ENABLED` | `false` | Enable autonomous loop alongside Telegram |
 | `CUE_LOOP_INTERVAL_SECONDS` | `30` | Seconds between loop iterations |
+| `CUE_HEALTHCHECK_ENABLED` | `true` | Enable `/healthz` endpoint for probes |
+| `CUE_HEALTHCHECK_HOST` | `0.0.0.0` | Health endpoint bind host |
+| `CUE_HEALTHCHECK_PORT` | `8080` | Health endpoint bind port |
 
 ## License
 

@@ -27,12 +27,14 @@ class ApprovalGateway:
     ) -> bool:
         """Send an approval request and block until approved/denied or timeout."""
         approval_id = f"approval_{step_id}_{uuid4().hex[:6]}"
-        keyboard = InlineKeyboardMarkup([
+        keyboard = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton("Approve", callback_data=f"approve:{approval_id}"),
-                InlineKeyboardButton("Deny", callback_data=f"deny:{approval_id}"),
+                [
+                    InlineKeyboardButton("Approve", callback_data=f"approve:{approval_id}"),
+                    InlineKeyboardButton("Deny", callback_data=f"deny:{approval_id}"),
+                ]
             ]
-        ])
+        )
 
         await self._bot.send_message(
             chat_id=self._admin_chat_id,
