@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+import json
 
 import pytest
 
@@ -104,3 +105,87 @@ def test_main_create_skill_simple(monkeypatch, tmp_path: Path):
     main_module.main()
 
     assert (tmp_path / "ops_note.py").exists()
+
+
+def _write_marketplace_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    packages_dir = tmp_path / "registry_packages"
+    package_file = packages_dir / "demo_skill" / "1.0.0" / "demo_skill.py"
+    package_file.parent.mkdir(parents=True, exist_ok=True)
+    package_file.write_text(
+        """
+SKILL_MANIFEST = {
+    "name": "demo_skill",
+    "description": "demo",
+    "tools": [{"name": "run", "schema": {"name": "run", "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}}],
+}
+
+def run() -> dict:
+    return {"ok": True}
+""",
+        encoding="utf-8",
+    )
+    index_path = tmp_path / "index.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "skills": [
+                    {
+                        "id": "demo_skill",
+                        "name": "Demo Skill",
+                        "description": "test",
+                        "tags": ["demo"],
+                        "rating_average": 4.0,
+                        "rating_count": 1,
+                        "versions": [
+                            {
+                                "version": "1.0.0",
+                                "cue_agent_constraint": ">=0.1.0,<0.3.0",
+                                "package_path": "demo_skill/1.0.0/demo_skill.py",
+                                "usage_count": 10,
+                                "quality_score": 0.9,
+                                "success_rate": 1.0,
+                                "security_reviewed": True,
+                                "docs_url": "https://example.test/demo",
+                            }
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    state_path = tmp_path / "installed.json"
+    return index_path, packages_dir, skills_dir, state_path
+
+
+def test_main_marketplace_search(monkeypatch, capsys, tmp_path: Path):
+    index_path, packages_dir, skills_dir, state_path = _write_marketplace_fixture(tmp_path)
+    monkeypatch.setenv("CUE_SKILLS_REGISTRY_INDEX_PATH", str(index_path))
+    monkeypatch.setenv("CUE_SKILLS_REGISTRY_PACKAGES_DIR", str(packages_dir))
+    monkeypatch.setenv("CUE_SKILLS_DIR", str(skills_dir))
+    monkeypatch.setenv("CUE_SKILLS_REGISTRY_STATE_PATH", str(state_path))
+    monkeypatch.setattr(sys, "argv", ["cue-agent", "marketplace", "search", "demo"])
+
+    main_module.main()
+
+    output = capsys.readouterr().out
+    assert "demo_skill@1.0.0" in output
+
+
+def test_main_marketplace_install(monkeypatch, capsys, tmp_path: Path):
+    index_path, packages_dir, skills_dir, state_path = _write_marketplace_fixture(tmp_path)
+    monkeypatch.setenv("CUE_SKILLS_REGISTRY_INDEX_PATH", str(index_path))
+    monkeypatch.setenv("CUE_SKILLS_REGISTRY_PACKAGES_DIR", str(packages_dir))
+    monkeypatch.setenv("CUE_SKILLS_DIR", str(skills_dir))
+    monkeypatch.setenv("CUE_SKILLS_REGISTRY_STATE_PATH", str(state_path))
+    monkeypatch.setattr(sys, "argv", ["cue-agent", "marketplace", "install", "demo_skill"])
+
+    main_module.main()
+
+    assert (skills_dir / "demo_skill.py").exists()
+    output = capsys.readouterr().out
+    assert "Installed demo_skill@1.0.0" in output

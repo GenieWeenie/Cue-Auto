@@ -42,6 +42,7 @@ _COMMAND_HELP: list[tuple[str, str]] = [
     ("settings", "Current runtime settings"),
     ("audit", "Export audit trail"),
     ("users", "User access controls"),
+    ("market", "Skill marketplace commands"),
 ]
 
 _CALLBACK_TO_COMMAND: dict[str, str] = {
@@ -53,6 +54,7 @@ _CALLBACK_TO_COMMAND: dict[str, str] = {
     "approve": "/approve",
     "settings": "/settings",
     "users": "/users",
+    "market": "/market",
 }
 
 _MAX_MESSAGE_CHARS = 3500
@@ -89,6 +91,7 @@ class TelegramGateway:
         self.app.add_handler(CommandHandler("settings", self._handle_command_message))
         self.app.add_handler(CommandHandler("audit", self._handle_command_message))
         self.app.add_handler(CommandHandler("users", self._handle_command_message))
+        self.app.add_handler(CommandHandler("market", self._handle_command_message))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
         self.app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, self._handle_message))
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))

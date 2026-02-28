@@ -15,6 +15,7 @@ from typing import Any
 from environment.executor import AsyncLocalExecutor
 from protocol.state_manager import StateManager
 
+from cue_agent import __version__ as cue_agent_version
 from cue_agent.actions.registry import ActionRegistry
 from cue_agent.audit import AuditQuery, AuditTrail
 from cue_agent.brain.cue_brain import CueBrain
@@ -37,6 +38,7 @@ from cue_agent.security.approval_gate import ApprovalGate
 from cue_agent.security.risk_classifier import RiskClassifier
 from cue_agent.security.user_access import UserAccessStore, has_permission, is_approver
 from cue_agent.skills.loader import SkillLoader
+from cue_agent.skills.marketplace import SkillMarketplace
 from cue_agent.skills.watcher import SkillWatcher
 
 logger = logging.getLogger(__name__)
@@ -113,6 +115,13 @@ class CueApp:
 
         # --- Skills ---
         self.skill_loader = SkillLoader(self.config.skills_dir)
+        self.marketplace = SkillMarketplace(
+            index_path=self.config.skills_registry_index_path,
+            packages_dir=self.config.skills_registry_packages_dir,
+            install_dir=self.config.skills_dir,
+            installed_state_path=self.config.skills_registry_state_path,
+            cue_agent_version=cue_agent_version,
+        )
         loaded_skills = self.skill_loader.load_all()
         if loaded_skills:
             self.actions.load_skills(loaded_skills)
@@ -224,6 +233,9 @@ class CueApp:
         if command == "/users":
             sub = parts[1].lower() if len(parts) > 1 else ""
             return "users.self" if sub in {"", "me", "whoami", "help", "?"} else "users.manage"
+        if command == "/market":
+            sub = parts[1].lower() if len(parts) > 1 else ""
+            return "skills.marketplace.view" if sub in {"", "help", "search"} else "skills.marketplace.manage"
         return None
 
     def _deny_access(self, *, msg: UnifiedMessage, role: str, command: str, permission: str) -> UnifiedResponse:
@@ -401,6 +413,9 @@ class CueApp:
 
             if command == "/users":
                 return self._handle_users_command(msg, parts[1:], role)
+
+            if command == "/market":
+                return self._handle_market_command(msg, parts[1:])
 
             if command == "/tasks":
                 mode = parts[1].lower() if len(parts) > 1 else ""
@@ -700,6 +715,173 @@ class CueApp:
 
         return UnifiedResponse(text=self._users_help_text(), chat_id=msg.chat_id)
 
+    def _handle_market_command(self, msg: UnifiedMessage, args: list[str]) -> UnifiedResponse:
+        if not args or args[0].lower() in {"help", "?"}:
+            return UnifiedResponse(text=self._market_help_text(), chat_id=msg.chat_id)
+
+        sub = args[0].lower()
+        try:
+            if sub == "search":
+                query = " ".join(args[1:]).strip()
+                rows = self.marketplace.search(query, limit=10)
+                self._record_audit_event(
+                    event_type="skill_marketplace",
+                    action="search",
+                    outcome="success",
+                    chat_id=msg.chat_id,
+                    user_id=msg.user_id,
+                    details={"query": query, "count": len(rows)},
+                )
+                if not rows:
+                    return UnifiedResponse(text="No marketplace skills found.", chat_id=msg.chat_id)
+                lines = ["*Marketplace Skills*"]
+                for row in rows:
+                    lines.append(
+                        f"- `{row['id']}` `{row['latest_version']}` "
+                        f"quality=`{row['quality_score']:.2f}` usage=`{row['usage_count']}`"
+                    )
+                    lines.append(f"  {row['description'][:120]}")
+                return UnifiedResponse(text="\n".join(lines), chat_id=msg.chat_id)
+
+            if sub == "install":
+                if len(args) < 2:
+                    return UnifiedResponse(text="Usage: /market install <skill_id> [version]", chat_id=msg.chat_id)
+                skill_id = args[1].strip()
+                version = args[2].strip() if len(args) > 2 else None
+                result = self.marketplace.install(skill_id, version=version or None, force=True)
+                installed_path = Path(str(result["path"]))
+                self._reload_marketplace_skill(installed_path)
+                self._record_audit_event(
+                    event_type="skill_marketplace",
+                    action="install",
+                    outcome="success",
+                    chat_id=msg.chat_id,
+                    user_id=msg.user_id,
+                    details={"skill_id": skill_id, "version": result.get("version", "")},
+                )
+                return UnifiedResponse(
+                    text=(
+                        f"Installed `{skill_id}` version `{result['version']}`.\n"
+                        "Skill written to skills directory and hot-reload is enabled."
+                    ),
+                    chat_id=msg.chat_id,
+                )
+
+            if sub == "update":
+                target = args[1].strip() if len(args) > 1 else "all"
+                if target == "all":
+                    rows = self.marketplace.update_all()
+                    self._record_audit_event(
+                        event_type="skill_marketplace",
+                        action="update_all",
+                        outcome="success",
+                        chat_id=msg.chat_id,
+                        user_id=msg.user_id,
+                        details={"count": len(rows)},
+                    )
+                    lines = ["*Marketplace Updates*"]
+                    for row in rows:
+                        status = str(row.get("status", "updated"))
+                        skill_id = str(row.get("skill_id", "unknown"))
+                        if status == "updated":
+                            path_value = str(row.get("path", "")).strip()
+                            if path_value:
+                                self._reload_marketplace_skill(Path(path_value))
+                            lines.append(
+                                f"- `{skill_id}` `{row.get('previous_version', '?')}` -> `{row.get('version', '?')}`"
+                            )
+                        elif status == "up_to_date":
+                            lines.append(f"- `{skill_id}` up-to-date (`{row.get('version', '?')}`)")
+                        else:
+                            lines.append(f"- `{skill_id}` error: {row.get('error', 'unknown error')}")
+                    return UnifiedResponse(text="\n".join(lines), chat_id=msg.chat_id)
+
+                row = self.marketplace.update(target)
+                self._record_audit_event(
+                    event_type="skill_marketplace",
+                    action="update_one",
+                    outcome=str(row.get("status", "updated")),
+                    chat_id=msg.chat_id,
+                    user_id=msg.user_id,
+                    details={"skill_id": target, "version": row.get("version", "")},
+                )
+                if row.get("status") == "updated":
+                    path_value = str(row.get("path", "")).strip()
+                    if path_value:
+                        self._reload_marketplace_skill(Path(path_value))
+                    return UnifiedResponse(
+                        text=(
+                            f"Updated `{target}` from `{row.get('previous_version', '?')}` "
+                            f"to `{row.get('version', '?')}`."
+                        ),
+                        chat_id=msg.chat_id,
+                    )
+                return UnifiedResponse(
+                    text=f"`{target}` is already up-to-date (`{row.get('version', '?')}`).",
+                    chat_id=msg.chat_id,
+                )
+
+            if sub == "validate":
+                if len(args) < 2:
+                    return UnifiedResponse(text="Usage: /market validate <path>", chat_id=msg.chat_id)
+                report = self.marketplace.validate_submission(args[1])
+                if report["ok"]:
+                    self._record_audit_event(
+                        event_type="skill_marketplace",
+                        action="validate_submission",
+                        outcome="success",
+                        chat_id=msg.chat_id,
+                        user_id=msg.user_id,
+                        details={"path": args[1]},
+                    )
+                    return UnifiedResponse(
+                        text=f"Submission valid for `{report.get('skill_name', '')}`.",
+                        chat_id=msg.chat_id,
+                    )
+                return UnifiedResponse(
+                    text=f"Submission invalid: {'; '.join(report['errors'])}",
+                    chat_id=msg.chat_id,
+                )
+
+            if sub in {"validate-registry", "registry-check"}:
+                report = self.marketplace.validate_registry_index()
+                if report["ok"]:
+                    self._record_audit_event(
+                        event_type="skill_marketplace",
+                        action="validate_registry",
+                        outcome="success",
+                        chat_id=msg.chat_id,
+                        user_id=msg.user_id,
+                        details={"skill_count": report["skill_count"]},
+                    )
+                    return UnifiedResponse(
+                        text=f"Registry valid (`{report['skill_count']}` skill entries).",
+                        chat_id=msg.chat_id,
+                    )
+                return UnifiedResponse(
+                    text=f"Registry invalid: {'; '.join(report['errors'][:5])}",
+                    chat_id=msg.chat_id,
+                )
+        except Exception as exc:
+            self._record_audit_event(
+                event_type="skill_marketplace",
+                action=sub,
+                outcome="error",
+                chat_id=msg.chat_id,
+                user_id=msg.user_id,
+                details={"error": str(exc)},
+            )
+            return UnifiedResponse(text=f"Marketplace command error: {exc}", chat_id=msg.chat_id)
+
+        return UnifiedResponse(text=self._market_help_text(), chat_id=msg.chat_id)
+
+    def _reload_marketplace_skill(self, path: Path) -> None:
+        try:
+            skill = self.skill_loader.reload_skill(path)
+            self.actions.reload_skill(skill)
+        except Exception:
+            logger.exception("Marketplace skill reload failed", extra={"event": "marketplace_reload_failed"})
+
     def _task_help_text(self) -> str:
         return (
             "Task commands:\n"
@@ -711,6 +893,7 @@ class CueApp:
             "- /audit [json|csv|markdown] [event=...] [risk=...] [outcome=...] [user=...] "
             "[start=YYYY-MM-DD] [end=YYYY-MM-DD]\n"
             "- /users me | /users list | /users role <user_id> <role> | /users remove <user_id>\n"
+            "- /market search <query> | /market install <skill_id> [version] | /market update [skill_id|all]\n"
             "- /tasks [status|all]\n"
             "- /tasks download\n"
             "- /task add [p1|p2|p3|p4] <title>\n"
@@ -732,6 +915,7 @@ class CueApp:
             "- `/usage` Provider usage and spend\n"
             "- `/approve` Pending approval requests\n"
             "- `/users ...` User access and role management\n"
+            "- `/market ...` Community skill marketplace commands\n"
             "- `/settings` Runtime settings snapshot"
         )
 
@@ -751,6 +935,17 @@ class CueApp:
             "- /users list\n"
             "- /users role <user_id> <admin|operator|user|readonly>\n"
             "- /users remove <user_id>"
+        )
+
+    @staticmethod
+    def _market_help_text() -> str:
+        return (
+            "Marketplace commands:\n"
+            "- /market search <query>\n"
+            "- /market install <skill_id> [version]\n"
+            "- /market update [skill_id|all]\n"
+            "- /market validate-registry\n"
+            "- /market validate <path>"
         )
 
     def _status_text(self) -> str:

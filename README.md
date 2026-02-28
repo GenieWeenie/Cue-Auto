@@ -229,7 +229,7 @@ docker compose -f docker-compose.yml -f docker-compose.webhook.yml up -d --build
 python -m cue_agent --mode polling
 ```
 
-Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`, `/audit`, `/users`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
+Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`, `/audit`, `/users`, `/market`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
 
 ### Webhook Mode (Telegram HTTPS)
 
@@ -293,6 +293,7 @@ Use these in Telegram chat:
 - `/usage` — monthly provider usage, estimated spend, and budget thresholds
 - `/audit json|csv|markdown [event=...] [risk=...] [outcome=...] [user=...] [start=YYYY-MM-DD] [end=YYYY-MM-DD]` — export filtered audit trail
 - `/users me|list|role|remove` — inspect and manage user-role access
+- `/market search|install|update` — community registry workflow
 - `/tasks` — list queued tasks
 - `/tasks pending|blocked|in_progress|failed|done|all`
 - `/tasks download|export|json` — export tasks as a JSON attachment
@@ -448,6 +449,32 @@ When `CUE_SKILLS_HOT_RELOAD=true` (default), a background watcher polls the skil
 - **Modified** files trigger a reload (re-imports the module)
 - **Deleted** files trigger an unload (tools removed from registry)
 
+## Skill Marketplace
+
+CueAgent includes a local community registry flow for search/install/update with metadata and validation:
+
+CLI:
+- `cue-agent marketplace search <query>`
+- `cue-agent marketplace install <skill_id> [--version X.Y.Z]`
+- `cue-agent marketplace update <skill_id|all>`
+- `cue-agent marketplace validate-registry`
+- `cue-agent marketplace validate-submission <path>`
+
+Telegram:
+- `/market search <query>`
+- `/market install <skill_id> [version]`
+- `/market update [skill_id|all]`
+
+Registry and package defaults:
+- `skills/registry/index.json`
+- `skills/registry_packages/`
+
+Submission validation checks:
+- manifest shape and tool/function mapping
+- semver + CueAgent compatibility constraints
+- basic security scan for disallowed dangerous patterns
+- docs presence requirements
+
 ## LLM Provider Cascade
 
 CueAgent classifies requests as simple vs complex and chooses provider order accordingly:
@@ -521,6 +548,9 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 | `CUE_SOUL_MD_PATH` | `SOUL.md` | Agent identity file path |
 | `CUE_SKILLS_DIR` | `skills` | Skills directory path |
 | `CUE_SKILLS_HOT_RELOAD` | `true` | Enable skill hot-reloading |
+| `CUE_SKILLS_REGISTRY_INDEX_PATH` | `skills/registry/index.json` | Marketplace registry index path |
+| `CUE_SKILLS_REGISTRY_PACKAGES_DIR` | `skills/registry_packages` | Marketplace packaged skill source directory |
+| `CUE_SKILLS_REGISTRY_STATE_PATH` | `skills/.marketplace-installed.json` | Installed marketplace skill state file |
 | `CUE_HIGH_RISK_TOOLS` | `["run_shell","write_file","send_telegram"]` | Tools requiring approval |
 | `CUE_APPROVAL_REQUIRED_LEVELS` | `["high","critical"]` | Risk levels that trigger mandatory approval |
 | `CUE_RISK_RULES_PATH` | `skills/risk_rules.json` | Path to JSON risk policy rules file |

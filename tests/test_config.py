@@ -27,6 +27,9 @@ def test_default_config():
     assert config.audit_retention_days == 30
     assert config.multi_user_enabled is True
     assert config.multi_user_bootstrap_first_user is True
+    assert config.skills_registry_index_path == "skills/registry/index.json"
+    assert config.skills_registry_packages_dir == "skills/registry_packages"
+    assert config.skills_registry_state_path == "skills/.marketplace-installed.json"
 
 
 def test_has_provider_flags():

@@ -99,6 +99,9 @@ class CueConfig(BaseSettings):
     # --- Skills ---
     skills_dir: str = "skills"
     skills_hot_reload: bool = True
+    skills_registry_index_path: str = "skills/registry/index.json"
+    skills_registry_packages_dir: str = "skills/registry_packages"
+    skills_registry_state_path: str = "skills/.marketplace-installed.json"
 
     # --- Autonomous Loop ---
     loop_enabled: bool = False

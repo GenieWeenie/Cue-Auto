@@ -26,6 +26,9 @@ def _install_fakes(
 ):
     t = SimpleNamespace(
         action_registry_bots=[],
+        marketplace_searches=[],
+        marketplace_installs=[],
+        marketplace_updates=[],
         memory_turns=[],
         vector_turns=[],
         vector_recalls=[],
@@ -77,6 +80,9 @@ def _install_fakes(
             self.risk_sandbox_dry_run = False
             self.skills_dir = "skills"
             self.skills_hot_reload = skills_hot_reload
+            self.skills_registry_index_path = "skills/registry/index.json"
+            self.skills_registry_packages_dir = "skills/registry_packages"
+            self.skills_registry_state_path = "skills/.marketplace-installed.json"
             self.heartbeat_enabled = heartbeat_enabled
             self.daily_summary_cron = "0 8 * * *"
             self.telegram_admin_chat_id = 42
@@ -439,6 +445,41 @@ def _install_fakes(
         def stop(self):
             t.watcher_stop += 1
 
+    class FakeMarketplace:
+        def __init__(self, **kwargs):  # noqa: ARG002
+            pass
+
+        def search(self, query: str = "", limit: int = 10):  # noqa: ARG002
+            t.marketplace_searches.append(query)
+            return [
+                {
+                    "id": "release_digest",
+                    "latest_version": "1.1.0",
+                    "quality_score": 0.95,
+                    "usage_count": 500,
+                    "description": "release digest",
+                }
+            ]
+
+        def install(self, skill_id: str, *, version: str | None = None, force: bool = False):  # noqa: ARG002
+            t.marketplace_installs.append((skill_id, version))
+            path = Path("/tmp") / f"{skill_id}.py"
+            return {"skill_id": skill_id, "version": version or "1.1.0", "path": str(path)}
+
+        def update(self, skill_id: str):
+            t.marketplace_updates.append(skill_id)
+            return {"skill_id": skill_id, "status": "updated", "previous_version": "1.0.0", "version": "1.1.0"}
+
+        def update_all(self):
+            t.marketplace_updates.append("all")
+            return [{"skill_id": "release_digest", "status": "up_to_date", "version": "1.1.0"}]
+
+        def validate_submission(self, _path: str):
+            return {"ok": True, "errors": [], "warnings": [], "skill_name": "x"}
+
+        def validate_registry_index(self):
+            return {"ok": True, "errors": [], "warnings": [], "skill_count": 1}
+
     class FakeRalphLoop:
         def __init__(self, **kwargs):  # noqa: ARG002
             self.is_running = False
@@ -477,6 +518,7 @@ def _install_fakes(
     monkeypatch.setattr(app_module, "NotificationManager", FakeNotificationManager)
     monkeypatch.setattr(app_module, "SkillLoader", FakeSkillLoader)
     monkeypatch.setattr(app_module, "SkillWatcher", FakeSkillWatcher)
+    monkeypatch.setattr(app_module, "SkillMarketplace", FakeMarketplace)
     monkeypatch.setattr(app_module, "RalphLoop", FakeRalphLoop)
 
     return t
@@ -621,6 +663,12 @@ async def test_app_task_commands(monkeypatch):
     file_response = await app._handle_message(file_msg)
     assert "File Received" in file_response.text
 
+    market_search_msg = UnifiedMessage(
+        platform="telegram", chat_id="chat-1", user_id="u1", text="/market search release"
+    )
+    market_search_response = await app._handle_message(market_search_msg)
+    assert "Marketplace Skills" in market_search_response.text
+
 
 @pytest.mark.asyncio
 async def test_app_users_command_permissions(monkeypatch):
@@ -640,6 +688,31 @@ async def test_app_users_command_permissions(monkeypatch):
     )
     denied_response = await app._handle_message(denied_msg)
     assert "Access denied" in denied_response.text
+
+    denied_market_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u1", text="/market install x")
+    denied_market_response = await app._handle_message(denied_market_msg)
+    assert "Access denied" in denied_market_response.text
+
+
+@pytest.mark.asyncio
+async def test_app_marketplace_install_and_update_admin(monkeypatch):
+    t = _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    app.user_access.set_role("u-admin", "admin", actor_user_id="system")
+
+    install_msg = UnifiedMessage(
+        platform="telegram", chat_id="chat-1", user_id="u-admin", text="/market install release_digest"
+    )
+    install_response = await app._handle_message(install_msg)
+    assert "Installed `release_digest`" in install_response.text
+    assert t.marketplace_installs == [("release_digest", None)]
+    assert t.skill_loader_reloads[-1] == "release_digest"
+    assert t.action_reloads[-1] == "release_digest"
+
+    update_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u-admin", text="/market update all")
+    update_response = await app._handle_message(update_msg)
+    assert "Marketplace Updates" in update_response.text
+    assert t.marketplace_updates == ["all"]
 
 
 @pytest.mark.asyncio

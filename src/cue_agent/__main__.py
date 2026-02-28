@@ -33,6 +33,39 @@ def main() -> None:
         action="store_true",
         help="Overwrite existing scaffold path if it exists",
     )
+    marketplace_parser = subparsers.add_parser(
+        "marketplace",
+        help="Search/install/update community registry skills",
+    )
+    marketplace_subparsers = marketplace_parser.add_subparsers(dest="marketplace_command")
+    market_search_parser = marketplace_subparsers.add_parser("search", help="Search marketplace registry")
+    market_search_parser.add_argument("query", nargs="?", default="", help="Search query")
+    market_search_parser.add_argument("--limit", type=int, default=10, help="Max results to return")
+    market_install_parser = marketplace_subparsers.add_parser("install", help="Install a marketplace skill")
+    market_install_parser.add_argument("skill_id", help="Registry skill ID")
+    market_install_parser.add_argument("--version", default="", help="Specific version to install")
+    market_install_parser.add_argument("--force", action="store_true", help="Overwrite existing installed skill path")
+    market_update_parser = marketplace_subparsers.add_parser("update", help="Update installed marketplace skills")
+    market_update_parser.add_argument(
+        "skill_id",
+        nargs="?",
+        default="all",
+        help="Specific installed skill ID, or 'all'",
+    )
+    market_validate_registry_parser = marketplace_subparsers.add_parser(
+        "validate-registry",
+        help="Validate registry index and packaged submissions",
+    )
+    market_validate_registry_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Treat warnings as errors",
+    )
+    market_validate_submission_parser = marketplace_subparsers.add_parser(
+        "validate-submission",
+        help="Validate a local skill submission path",
+    )
+    market_validate_submission_parser.add_argument("path", help="Path to .py skill or skill-pack directory")
     parser.add_argument(
         "--mode",
         choices=["polling", "webhook", "loop", "once"],
@@ -76,6 +109,94 @@ def main() -> None:
         )
         print(f"Created skill scaffold at {created}")
         return
+
+    if args.command == "marketplace":
+        from cue_agent import __version__ as cue_agent_version
+        from cue_agent.config import CueConfig
+        from cue_agent.skills.marketplace import SkillMarketplace
+
+        config = CueConfig()
+        market = SkillMarketplace(
+            index_path=config.skills_registry_index_path,
+            packages_dir=config.skills_registry_packages_dir,
+            install_dir=config.skills_dir,
+            installed_state_path=config.skills_registry_state_path,
+            cue_agent_version=cue_agent_version,
+        )
+        command = args.marketplace_command or "search"
+
+        if command == "search":
+            rows = market.search(args.query, limit=max(1, args.limit))
+            if not rows:
+                print("No marketplace skills found.")
+                return
+            for row in rows:
+                print(
+                    f"{row['id']}@{row['latest_version']} "
+                    f"quality={row['quality_score']:.2f} usage={row['usage_count']} "
+                    f"rating={row['rating_average']:.1f}/{row['rating_count']}"
+                )
+                print(f"  {row['name']}: {row['description']}")
+            return
+
+        if command == "install":
+            result = market.install(args.skill_id, version=args.version or None, force=args.force)
+            print(f"Installed {result['skill_id']}@{result['version']} -> {result['path']}")
+            print(result["hot_reload_hint"])
+            return
+
+        if command == "update":
+            if args.skill_id == "all":
+                rows = market.update_all()
+                for row in rows:
+                    if row.get("status") == "updated":
+                        print(
+                            f"Updated {row['skill_id']} {row.get('previous_version', '?')} -> {row.get('version', '?')}"
+                        )
+                    elif row.get("status") == "up_to_date":
+                        print(f"{row['skill_id']} is up-to-date ({row.get('version', '?')})")
+                    else:
+                        print(f"{row['skill_id']} update error: {row.get('error', 'unknown error')}")
+                return
+            row = market.update(args.skill_id)
+            if row.get("status") == "updated":
+                print(f"Updated {row['skill_id']} {row.get('previous_version', '?')} -> {row.get('version', '?')}")
+            else:
+                print(f"{row['skill_id']} is up-to-date ({row.get('version', '?')})")
+            return
+
+        if command == "validate-registry":
+            registry_report = market.validate_registry_index()
+            print(f"Registry skills: {registry_report['skill_count']}")
+            if registry_report["warnings"]:
+                print("Warnings:")
+                for warning in registry_report["warnings"]:
+                    print(f"- {warning}")
+            if registry_report["errors"]:
+                print("Errors:")
+                for error in registry_report["errors"]:
+                    print(f"- {error}")
+                sys.exit(1)
+            if args.strict and registry_report["warnings"]:
+                sys.exit(1)
+            print("Registry validation passed.")
+            return
+
+        if command == "validate-submission":
+            submission_report = market.validate_submission(args.path)
+            if submission_report["warnings"]:
+                print("Warnings:")
+                for warning in submission_report["warnings"]:
+                    print(f"- {warning}")
+            if submission_report["errors"]:
+                print("Errors:")
+                for error in submission_report["errors"]:
+                    print(f"- {error}")
+                sys.exit(1)
+            print(f"Submission validation passed for '{submission_report.get('skill_name', '')}'.")
+            return
+
+        raise ValueError(f"Unsupported marketplace command: {command}")
 
     if args.export_audit_format:
         from cue_agent.audit import AuditQuery, AuditTrail

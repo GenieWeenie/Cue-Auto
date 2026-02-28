@@ -20,6 +20,7 @@ env/
 
 # State database
 *.db
+skills/.marketplace-installed.json
 
 # Agent workspace (keep the folder, ignore contents)
 data/*

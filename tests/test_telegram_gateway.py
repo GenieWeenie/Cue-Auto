@@ -257,6 +257,7 @@ async def test_start_polling_sets_command_menu(monkeypatch):
     await gateway.start_polling()
     assert any(command.command == "status" for command in gateway.app.bot.commands)
     assert any(command.command == "audit" for command in gateway.app.bot.commands)
+    assert any(command.command == "market" for command in gateway.app.bot.commands)
     await gateway.stop()
 
 

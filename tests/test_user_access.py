@@ -26,6 +26,9 @@ def test_role_permissions_and_approver_roles():
     assert has_permission("user", "tasks.manage") is True
     assert has_permission("readonly", "tasks.manage") is False
     assert has_permission("readonly", "tasks.view") is True
+    assert has_permission("user", "skills.marketplace.view") is True
+    assert has_permission("user", "skills.marketplace.manage") is False
+    assert has_permission("operator", "skills.marketplace.manage") is True
 
     assert is_approver("admin") is True
     assert is_approver("operator") is True

@@ -1,0 +1,80 @@
+{
+  "registry_version": "1",
+  "generated_at_utc": "2026-02-28T03:00:00+00:00",
+  "skills": [
+    {
+      "id": "release_digest",
+      "name": "Release Digest Builder",
+      "description": "Build concise release digests from change lists.",
+      "tags": ["release", "docs", "summary"],
+      "rating_average": 4.7,
+      "rating_count": 62,
+      "versions": [
+        {
+          "version": "1.0.0",
+          "cue_agent_constraint": ">=0.1.0,<0.3.0",
+          "package_path": "release_digest/1.0.0/release_digest.py",
+          "usage_count": 320,
+          "quality_score": 0.91,
+          "success_rate": 0.97,
+          "security_reviewed": true,
+          "docs_url": "https://example.com/skills/release_digest/v1.0.0",
+          "last_updated_utc": "2026-02-18T00:00:00+00:00"
+        },
+        {
+          "version": "1.1.0",
+          "cue_agent_constraint": ">=0.1.0,<0.3.0",
+          "package_path": "release_digest/1.1.0/release_digest.py",
+          "usage_count": 515,
+          "quality_score": 0.95,
+          "success_rate": 0.985,
+          "security_reviewed": true,
+          "docs_url": "https://example.com/skills/release_digest/v1.1.0",
+          "last_updated_utc": "2026-02-25T00:00:00+00:00"
+        }
+      ]
+    },
+    {
+      "id": "incident_triage_pack",
+      "name": "Incident Triage Pack",
+      "description": "Normalize incidents and recommend triage actions.",
+      "tags": ["incident", "operations", "triage"],
+      "rating_average": 4.5,
+      "rating_count": 40,
+      "versions": [
+        {
+          "version": "1.0.0",
+          "cue_agent_constraint": ">=0.1.0,<0.3.0",
+          "package_path": "incident_triage_pack/1.0.0",
+          "usage_count": 205,
+          "quality_score": 0.9,
+          "success_rate": 0.96,
+          "security_reviewed": true,
+          "docs_url": "https://example.com/skills/incident_triage_pack/v1.0.0",
+          "last_updated_utc": "2026-02-22T00:00:00+00:00"
+        }
+      ]
+    },
+    {
+      "id": "audit_query_helper",
+      "name": "Audit Query Helper",
+      "description": "Build audit query filter suggestions for export commands.",
+      "tags": ["audit", "compliance", "query"],
+      "rating_average": 4.4,
+      "rating_count": 28,
+      "versions": [
+        {
+          "version": "1.2.0",
+          "cue_agent_constraint": ">=0.1.0,<0.3.0",
+          "package_path": "audit_query_helper/1.2.0/audit_query_helper.py",
+          "usage_count": 178,
+          "quality_score": 0.89,
+          "success_rate": 0.95,
+          "security_reviewed": true,
+          "docs_url": "https://example.com/skills/audit_query_helper/v1.2.0",
+          "last_updated_utc": "2026-02-20T00:00:00+00:00"
+        }
+      ]
+    }
+  ]
+}
