@@ -172,3 +172,194 @@ async def test_dashboard_pages_and_json_routes_with_auth():
         assert payload["providers"]["openai"] == "up"
     finally:
         await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_healthz_health_and_root_return_same_shape():
+    """GET /healthz, /health, and / return 200 with status_provider payload."""
+    payload = {"status": "ok", "version": "test"}
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=lambda: payload,
+    )
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        for path in ["/healthz", "/health", "/"]:
+            status_code, _, body = await _request_json(path, server.bound_port)
+            assert status_code == 200
+            assert body["status"] == "ok"
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_disabled_returns_404():
+    """When dashboard_enabled=False, GET /dashboard returns 404 dashboard_disabled."""
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=lambda: {"status": "ok"},
+        dashboard_enabled=False,
+    )
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        status_code, _, body = await _request_json("/dashboard", server.bound_port)
+        assert status_code == 404
+        assert body["error"] == "dashboard_disabled"
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_wrong_password_returns_401():
+    """Wrong Basic credentials return 401."""
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=lambda: {"status": "ok"},
+        dashboard_enabled=True,
+        dashboard_status_provider=lambda: {"runtime": {}},
+        dashboard_username="u",
+        dashboard_password="p",
+    )
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        wrong_auth = _basic_auth_header("u", "wrong")
+        status_code, _, body = await _raw_request("/dashboard", server.bound_port, headers=wrong_auth)
+        assert status_code == 401
+        assert b"authentication required" in body.lower()
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_tasks_and_providers_pages():
+    """GET /dashboard/tasks and /dashboard/providers return HTML."""
+    snapshot = {
+        "runtime": {},
+        "providers": {"openai": "up"},
+        "provider_metrics": {},
+        "queue": {"task_queue": {}},
+        "tasks": [],
+    }
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=lambda: {"status": "ok"},
+        dashboard_enabled=True,
+        dashboard_status_provider=lambda: snapshot,
+        dashboard_username="a",
+        dashboard_password="b",
+    )
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        auth = _basic_auth_header("a", "b")
+        status_code, _, body = await _raw_request("/dashboard/tasks", server.bound_port, headers=auth)
+        assert status_code == 200
+        assert b"Task Queue" in body and b"CueAgent Dashboard" in body
+        status_code, _, body = await _raw_request("/dashboard/providers", server.bound_port, headers=auth)
+        assert status_code == 200
+        assert b"Provider Health" in body
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_api_actions_and_tasks():
+    """GET /dashboard/api/actions and /dashboard/api/tasks return JSON."""
+    snapshot = {
+        "actions": [{"tool_name": "run_shell", "outcome": "success"}],
+        "tasks": [{"id": 1, "title": "T1", "status": "pending"}],
+        "queue": {"task_queue": {"pending": 1}},
+    }
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=lambda: {"status": "ok"},
+        dashboard_enabled=True,
+        dashboard_status_provider=lambda: snapshot,
+        dashboard_username="x",
+        dashboard_password="y",
+    )
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        auth = _basic_auth_header("x", "y")
+        status_code, _, payload = await _request_json("/dashboard/api/actions", server.bound_port, headers=auth)
+        assert status_code == 200
+        assert "actions" in payload
+        assert len(payload["actions"]) == 1
+        status_code, _, payload = await _request_json("/dashboard/api/tasks", server.bound_port, headers=auth)
+        assert status_code == 200
+        assert "tasks" in payload
+        assert payload["queue"] == snapshot["queue"]
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_unknown_path_returns_404():
+    """GET /dashboard/unknown returns 404 not_found."""
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=lambda: {"status": "ok"},
+        dashboard_enabled=True,
+        dashboard_status_provider=lambda: {},
+        dashboard_username="u",
+        dashboard_password="p",
+    )
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        auth = _basic_auth_header("u", "p")
+        status_code, _, payload = await _request_json("/dashboard/unknown", server.bound_port, headers=auth)
+        assert status_code == 404
+        assert payload["error"] == "not_found"
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_health_server_start_idempotent():
+    """Calling start() twice does not fail."""
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=lambda: {"status": "ok"},
+    )
+    await server.start()
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        status_code, _, _ = await _request_json("/healthz", server.bound_port)
+        assert status_code == 200
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_health_server_status_provider_raises_returns_500():
+    """When status_provider raises, response is 500 internal_error."""
+
+    def _raise():
+        raise RuntimeError("diagnostics failed")
+
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=_raise,
+    )
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        status_code, _, payload = await _request_json("/healthz", server.bound_port)
+        assert status_code == 500
+        assert payload["error"] == "internal_error"
+    finally:
+        await server.stop()
