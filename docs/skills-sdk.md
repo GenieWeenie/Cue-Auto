@@ -158,6 +158,12 @@ CueAgent includes a **local** skill registry for search, install, and update. Th
 
 The registry is **in-repo** and not a separate public service; “submission” means contributing to the repo’s `skills/registry` and `skills/registry_packages` and following the validation rules above.
 
+### Recommended / blessed skills
+
+**Blessed** (recommended) skills are those the project or operators treat as vetted for production use: e.g. security-reviewed, maintained, and meeting quality bar. The registry does not enforce this; it is a convention.
+
+- **Where to find them:** Use the registry index at `skills/registry/index.json`. Filter by metadata such as `security_reviewed: true` on a version, or by `quality_score` / `success_rate` in version entries. The marketplace CLI does not currently filter by these fields; you can inspect the index or add tooling to list only recommended skills.
+
 ## Troubleshooting
 
 1. Skill not loading

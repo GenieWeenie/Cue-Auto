@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -65,6 +65,21 @@ class ConfigCheckReport:
         lines.append("")
         lines.append(f"Result: {'PASS' if self.exit_code == 0 else 'FAIL'} (exit {self.exit_code})")
         return "\n".join(lines)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-suitable dict."""
+        return {
+            "providers": [asdict(p) for p in self.providers],
+            "telegram_status": self.telegram_status,
+            "telegram_detail": self.telegram_detail,
+            "skills_status": self.skills_status,
+            "skills_detail": self.skills_detail,
+            "soul_status": self.soul_status,
+            "soul_detail": self.soul_detail,
+            "errors": self.errors,
+            "warnings": self.warnings,
+            "exit_code": self.exit_code,
+        }
 
 
 def _default_fetcher(

@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -76,6 +77,12 @@ def main() -> None:
         "--check-config",
         action="store_true",
         help="Validate configuration and exit",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format for --check-config (default: text)",
     )
     parser.add_argument(
         "--export-audit-format",
@@ -233,7 +240,10 @@ def main() -> None:
 
         config = CueConfig()
         report = run_config_diagnostics(config)
-        print(report.to_text())
+        if args.format == "json":
+            print(json.dumps(report.to_dict(), indent=2))
+        else:
+            print(report.to_text())
         sys.exit(report.exit_code)
 
     from cue_agent.app import CueApp
