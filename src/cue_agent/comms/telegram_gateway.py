@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime, timezone
 from secrets import compare_digest
-from typing import Any
+from typing import Any, cast
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.constants import ChatAction
@@ -131,7 +131,7 @@ class TelegramGateway:
                 action=ChatAction.TYPING,
                 task=self.on_message(unified),
             )
-            await self._send_response(update, response)
+            await self._send_response(update, response, message_thread_id=unified.message_thread_id)
 
     async def _handle_command_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._handle_message(update, context)
@@ -202,6 +202,7 @@ class TelegramGateway:
         if message is None:
             return
 
+        thread_id: int | None = getattr(message, "message_thread_id", None)
         unified = UnifiedMessage(
             platform="telegram",
             chat_id=str(message.chat_id),
@@ -211,13 +212,14 @@ class TelegramGateway:
             else "unknown",
             text=command,
             raw={"message_id": message.message_id, "source": "callback"},
+            message_thread_id=thread_id,
         )
         response = await self._run_with_progress(
             chat_id=unified.chat_id,
             action=ChatAction.TYPING,
             task=self.on_message(unified),
         )
-        await self._send_response(query, response, from_callback=True)
+        await self._send_response(query, response, from_callback=True, message_thread_id=thread_id)
 
     async def _run_with_progress(
         self,
@@ -241,8 +243,17 @@ class TelegramGateway:
             await asyncio.sleep(2.0)
 
     async def _send_response(
-        self, update_or_query: Any, response: UnifiedResponse, *, from_callback: bool = False
+        self,
+        update_or_query: Any,
+        response: UnifiedResponse,
+        *,
+        from_callback: bool = False,
+        message_thread_id: int | None = None,
     ) -> None:
+        thread_id: int | None = (
+            message_thread_id if (self.config.telegram_use_topic_replies and message_thread_id is not None) else None
+        )
+        thread_kw: dict[str, int] = {"message_thread_id": thread_id} if thread_id is not None else {}
         keyboard = self._build_inline_keyboard(response.ui_mode)
         chat_id = int(response.chat_id)
         text_chunks = self._chunk_text(response.text)
@@ -257,10 +268,20 @@ class TelegramGateway:
                         reply_markup=keyboard,
                     )
                 for extra in text_chunks[1:]:
-                    await self.app.bot.send_message(chat_id=chat_id, text=extra, parse_mode=response.parse_mode)
+                    await self.app.bot.send_message(
+                        chat_id=chat_id,
+                        text=extra,
+                        parse_mode=response.parse_mode,
+                        **cast(Any, thread_kw),
+                    )
             else:
                 for chunk in text_chunks:
-                    await self.app.bot.send_message(chat_id=chat_id, text=chunk, parse_mode=response.parse_mode)
+                    await self.app.bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk,
+                        parse_mode=response.parse_mode,
+                        **cast(Any, thread_kw),
+                    )
         else:
             update = update_or_query
             if update.message is not None and text_chunks:
@@ -268,17 +289,23 @@ class TelegramGateway:
                     text_chunks[0],
                     parse_mode=response.parse_mode,
                     reply_markup=keyboard,
+                    **cast(Any, thread_kw),
                 )
                 for extra in text_chunks[1:]:
-                    await update.message.reply_text(extra, parse_mode=response.parse_mode)
+                    await update.message.reply_text(extra, parse_mode=response.parse_mode, **cast(Any, thread_kw))
             else:
                 for chunk in text_chunks:
-                    await self.app.bot.send_message(chat_id=chat_id, text=chunk, parse_mode=response.parse_mode)
+                    await self.app.bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk,
+                        parse_mode=response.parse_mode,
+                        **cast(Any, thread_kw),
+                    )
 
         if response.document_bytes is not None:
             filename = response.document_filename or "cue-agent-output.txt"
             document = InputFile(response.document_bytes, filename=filename)
-            await self.app.bot.send_document(chat_id=chat_id, document=document)
+            await self.app.bot.send_document(chat_id=chat_id, document=document, **cast(Any, thread_kw))
 
     def _build_inline_keyboard(self, ui_mode: str | None) -> InlineKeyboardMarkup | None:
         if ui_mode == "status":

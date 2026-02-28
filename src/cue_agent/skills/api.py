@@ -20,6 +20,12 @@ class SkillManifest(TypedDict):
     tools: list[SkillToolDefinition]
 
 
+class SkillManifestWithDeps(SkillManifest, total=False):
+    """Optional manifest fields. Use with SkillManifest for full shape."""
+
+    depends_on: list[str]  # Skill names/IDs that must load before this skill
+
+
 class SkillContext(Protocol):
     """Optional context object that a skill tool may accept."""
 

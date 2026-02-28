@@ -10,6 +10,7 @@ import time
 import pytest
 
 from cue_agent.health.server import HealthServer
+from cue_agent.metrics import get_prometheus_text
 
 
 async def _raw_request(
@@ -425,5 +426,50 @@ async def test_health_server_status_provider_raises_returns_500():
         status_code, _, payload = await _request_json("/healthz", server.bound_port)
         assert status_code == 500
         assert payload["error"] == "internal_error"
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_metrics_disabled_returns_404():
+    """When metrics are not enabled, GET /metrics returns 404 and metrics_disabled."""
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=lambda: {"status": "ok"},
+        metrics_enabled=False,
+    )
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        status_code, _, payload = await _request_json("/metrics", server.bound_port)
+        assert status_code == 404
+        assert payload["error"] == "metrics_disabled"
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_metrics_enabled_returns_200_and_prometheus_format():
+    """When metrics are enabled, GET /metrics returns 200 and valid Prometheus text format."""
+    usage = {"providers": {"openai": {"requests": 1, "tokens_in": 10, "tokens_out": 5, "estimated_cost_usd": 0.0}}}
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=lambda: {"status": "ok"},
+        metrics_enabled=True,
+        metrics_provider=lambda: get_prometheus_text(lambda: usage),
+        metrics_record_request=lambda path, duration: None,
+    )
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        status_code, headers, body = await _raw_request("/metrics", server.bound_port)
+        assert status_code == 200
+        assert "text/plain" in headers.get("content-type", "").lower()
+        text = body.decode("utf-8")
+        assert "# TYPE" in text
+        assert "cue_" in text
+        assert "cue_http_requests_total" in text or "cue_llm_" in text
     finally:
         await server.stop()

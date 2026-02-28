@@ -44,6 +44,7 @@ class MessageNormalizer:
         if not text:
             return None
 
+        thread_id: int | None = getattr(msg, "message_thread_id", None)
         return UnifiedMessage(
             platform="telegram",
             chat_id=str(msg.chat_id),
@@ -53,4 +54,5 @@ class MessageNormalizer:
             timestamp=msg.date or datetime.now(timezone.utc),
             raw=raw,
             reply_to_message_id=str(msg.reply_to_message.message_id) if msg.reply_to_message else None,
+            message_thread_id=thread_id,
         )

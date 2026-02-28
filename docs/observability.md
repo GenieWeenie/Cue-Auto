@@ -23,9 +23,39 @@ This document describes what CueAgent logs, how to use it for cost/latency/error
 - **Health endpoint** — `/healthz` includes provider status and (in webhook mode) webhook diagnostics. Use it for alerting when a provider is down or the webhook is misconfigured.
 - **Audit trail** — Filter by `outcome=error` or event type to inspect failures; export for post-mortems.
 
+## Prometheus /metrics (optional)
+
+When metrics are enabled, the health server exposes a **`/metrics`** endpoint in Prometheus text exposition format.
+
+### Enabling and disabling
+
+- **Env vars** (see `.env.example`):
+  - `CUE_METRICS_ENABLED` — set to `true` to expose `/metrics` (default: `false`).
+  - `CUE_METRICS_TYPE` — `prometheus` (expose `/metrics`), `statsd` (reserved for future push), or `none`.
+- With `CUE_METRICS_ENABLED=false` or `CUE_METRICS_TYPE` not `prometheus`, `GET /metrics` returns **404** and a JSON body `{"error": "metrics_disabled"}`.
+
+### Where /metrics is served
+
+- `/metrics` is served from the **same HTTP server as the health endpoint** (host/port from `CUE_HEALTHCHECK_HOST` and `CUE_HEALTHCHECK_PORT`), i.e. the same process that serves `/healthz`, `/health`, and the optional dashboard.
+
+### Metrics exposed
+
+- **HTTP (health server):**
+  - `cue_http_requests_total{path}` — total request count per path (e.g. `/healthz`, `/dashboard`, `/metrics` is not counted).
+  - `cue_http_request_duration_seconds{path}` — request latency histogram per path.
+- **LLM (from router usage summary):**
+  - `cue_llm_requests_total{provider}` — total LLM requests per provider (openai, anthropic, openrouter, lmstudio).
+  - `cue_llm_tokens_input_total{provider}` — total input tokens per provider.
+  - `cue_llm_tokens_output_total{provider}` — total output tokens per provider.
+  - `cue_llm_estimated_cost_usd{provider}` — estimated cumulative cost in USD per provider.
+
+### Scraping
+
+- Point a Prometheus server (or compatible scraper) at `http://<host>:<healthcheck_port>/metrics`. No authentication is applied to `/metrics`; protect the endpoint at the network or reverse-proxy layer if needed.
+
 ## Optional extensions
 
-- **Metrics export** — CueAgent does not currently expose Prometheus/StatsD metrics. To add them, you could instrument the LLM router (request count, latency histograms, token counters) and the audit trail (event counts by type/risk) and expose a `/metrics` endpoint. This would be a future enhancement.
+- **StatsD** — `CUE_METRICS_TYPE=statsd` is reserved for a future push-based integration; only `prometheus` is implemented.
 - **Tracing** — Correlation IDs are used in the audit trail; for distributed tracing you could propagate a trace ID through the app and log it in the audit and structured logs.
 
 For deployment, health checks, and dashboard setup, see the [deployment guide](deployment.md).

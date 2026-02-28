@@ -1,17 +1,18 @@
-"""Async HTTP server for health probes and optional monitoring dashboard."""
+"""Async HTTP server for health probes, optional monitoring dashboard, and /metrics."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import time
 import binascii
 import json
 import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Any
 from html import escape
 from secrets import compare_digest
-from typing import Any
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,9 @@ class HealthServer:
         dashboard_status_provider: Callable[[], dict[str, Any]] | None = None,
         dashboard_username: str = "admin",
         dashboard_password: str = "change-me",
+        metrics_enabled: bool = False,
+        metrics_provider: Callable[[], bytes] | None = None,
+        metrics_record_request: Callable[[str, float], None] | None = None,
     ):
         self.host = host
         self.port = port
@@ -61,6 +65,9 @@ class HealthServer:
         self._dashboard_provider = dashboard_status_provider
         self._dashboard_username = dashboard_username
         self._dashboard_password = dashboard_password
+        self._metrics_enabled = metrics_enabled
+        self._metrics_provider = metrics_provider
+        self._metrics_record_request = metrics_record_request
         self._server: asyncio.Server | None = None
 
     async def start(self) -> None:
@@ -92,9 +99,24 @@ class HealthServer:
         return int(self._server.sockets[0].getsockname()[1])
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        path = ""
+        start = time.monotonic()
         try:
             raw = await asyncio.wait_for(reader.read(_READ_LIMIT), timeout=_READ_TIMEOUT_SECONDS)
             method, path, headers = self._parse_request(raw)
+
+            if method == "GET" and path == "/metrics":
+                if self._metrics_enabled and self._metrics_provider is not None:
+                    body = self._metrics_provider()
+                    await self._write_response(
+                        writer,
+                        status="200 OK",
+                        body=body,
+                        content_type="text/plain; charset=utf-8; version=0.0.4",
+                    )
+                else:
+                    await self._write_json(writer, status="404 Not Found", payload={"error": "metrics_disabled"})
+                return
 
             if method == "GET" and path in {"/healthz", "/health", "/"}:
                 await self._write_json(writer, status="200 OK", payload=self._status_provider())
@@ -112,6 +134,8 @@ class HealthServer:
             except Exception:
                 pass
         finally:
+            if path != "/metrics" and self._metrics_record_request is not None:
+                self._metrics_record_request(path or "/", time.monotonic() - start)
             writer.close()
             await writer.wait_closed()
 

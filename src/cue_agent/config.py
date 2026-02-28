@@ -53,6 +53,7 @@ class CueConfig(BaseSettings):
     telegram_webhook_path: str = "/telegram/webhook"
     telegram_webhook_secret_token: str = ""
     telegram_webhook_drop_pending_updates: bool = False
+    telegram_use_topic_replies: bool = True
     notifications_enabled: bool = True
     notification_delivery_mode: str = "immediate"
     notification_priority_threshold: str = "medium"
@@ -123,6 +124,10 @@ class CueConfig(BaseSettings):
     workflows_enabled: bool = True
     workflows_dir: str = "workflows"
     workflows_hot_reload: bool = True
+
+    # --- Observability (Prometheus /metrics) ---
+    metrics_enabled: bool = False
+    metrics_type: str = "prometheus"  # prometheus | statsd | none
 
     # --- Healthcheck endpoint ---
     healthcheck_enabled: bool = True

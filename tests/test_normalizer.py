@@ -6,13 +6,14 @@ from datetime import datetime, timezone
 from cue_agent.comms.normalizer import MessageNormalizer
 
 
-def _make_telegram_update(text: str = "Hello") -> MagicMock:
+def _make_telegram_update(text: str = "Hello", message_thread_id: int | None = None) -> MagicMock:
     update = MagicMock()
     update.effective_message.text = text
     update.effective_message.chat_id = 12345
     update.effective_message.message_id = 1
     update.effective_message.date = datetime(2025, 1, 1, tzinfo=timezone.utc)
     update.effective_message.reply_to_message = None
+    update.effective_message.message_thread_id = message_thread_id
     update.effective_user.id = 99
     update.effective_user.username = "testuser"
     update.effective_user.first_name = "Test"
@@ -52,3 +53,11 @@ def test_normalize_telegram_document_attachment():
     assert msg.text == "/file"
     assert msg.raw["attachment"]["type"] == "document"
     assert msg.raw["attachment"]["file_name"] == "report.txt"
+
+
+def test_normalize_telegram_forum_topic_sets_message_thread_id():
+    """When the message is in a forum topic, message_thread_id is set on UnifiedMessage."""
+    update = _make_telegram_update("Hello from topic", message_thread_id=42)
+    msg = MessageNormalizer.normalize_telegram(update)
+    assert msg is not None
+    assert msg.message_thread_id == 42

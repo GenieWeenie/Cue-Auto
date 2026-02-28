@@ -64,6 +64,23 @@ Rules:
 - Each tool entry `name` must map to a function with the same name.
 - `schema.parameters` should define strict inputs (`required`, `additionalProperties`).
 
+### Dependency declaration and load order
+
+Skills can declare dependencies on other skills so they load in the correct order:
+
+```python
+SKILL_MANIFEST = {
+    "name": "my_skill",
+    "description": "Uses helpers from base_skill",
+    "depends_on": ["base_skill"],   # optional: list of skill names/IDs
+    "tools": [...],
+}
+```
+
+- **`depends_on`** (optional): list of skill names (or IDs) that must be loaded before this skill. The loader resolves order so dependencies are loaded first; if a dependency is missing from the skills directory, it is ignored (no error). Skills without `depends_on` are backward compatible and load as before.
+- **Circular dependencies**: if skill A depends on B and B depends on A (directly or through a chain), `load_all()` raises `ValueError` with a message like `Circular skill dependency: skill_a -> skill_b -> skill_a`.
+- Dependency resolution happens in `load_all()` when discovering and loading from the skills directory; `load_skill(path)` and `reload_skill(path)` are unchanged and do not resolve dependencies.
+
 ## Prompt Pattern
 
 Skill packs can include `prompt.md` for skill-specific system guidance:
