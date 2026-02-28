@@ -58,3 +58,30 @@ ruff format src tests
 ## Configuration
 
 Copy `.env.example` to `.env` and set at least one LLM provider key and Telegram credentials for full local testing. See [README](README.md#configuration-reference) for all options.
+
+## Dependency updates
+
+To see which packages have newer versions available:
+
+```bash
+pip list --outdated
+```
+
+When updating **non-EAP dependencies** (e.g. `openai`, `anthropic`, `python-telegram-bot`):
+
+1. Check the upstream changelog or release notes for breaking changes.
+2. Upgrade the dependency (adjust version in `pyproject.toml` or reinstall).
+3. Run the test suite after upgrading: `pytest tests/ -v`.
+4. Pin versions in `pyproject.toml` if needed for reproducible installs.
+
+**EAP** (efficient-agent-protocol) is pinned separately; see [EAP pin and upgrade path](#eap-pin-and-upgrade-path) below.
+
+## EAP pin and upgrade path
+
+The **EAP** (efficient-agent-protocol) dependency is currently pinned by **commit hash** in `pyproject.toml` for reproducible installs. When the EAP project publishes a release tag (e.g. `v0.1.0`), we will switch the pin from the commit to that tag.
+
+**Upgrade path** when a tag is available:
+
+1. In `pyproject.toml`, change the EAP dependency git ref from the commit hash to the tag (e.g. `@v0.1.0`).
+2. Run `pip install -e ".[dev]"` to install the updated dependency.
+3. Run the test suite: `pytest tests/ -v`.

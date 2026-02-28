@@ -49,6 +49,50 @@ def test_main_check_config_exits_1_when_diagnostics_fail(monkeypatch, capsys):
     assert "fake diagnostics" in capsys.readouterr().out
 
 
+def test_main_check_config_format_json(monkeypatch, capsys):
+    from cue_agent.config_diagnostics import ConfigCheckReport, ProviderCheck
+
+    report = ConfigCheckReport(
+        providers=[
+            ProviderCheck(
+                provider="openai",
+                status="ok",
+                model="gpt-4",
+                latency_ms=100,
+                detail="HTTP 200",
+                configured=True,
+            ),
+        ],
+        telegram_status="ok",
+        telegram_detail="token valid",
+        skills_status="ok",
+        skills_detail="0 discoverable skill(s)",
+        soul_status="ok",
+        soul_detail="readable",
+        errors=[],
+        warnings=[],
+        exit_code=0,
+    )
+    monkeypatch.setattr(sys, "argv", ["cue-agent", "--check-config", "--format", "json"])
+    monkeypatch.setattr(
+        "cue_agent.config_diagnostics.run_config_diagnostics",
+        lambda config: report,
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_module.main()
+
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    data = json.loads(output)
+    assert "exit_code" in data
+    assert data["exit_code"] == 0
+    assert "providers" in data
+    assert len(data["providers"]) >= 1
+    assert data["providers"][0]["provider"] == "openai"
+    assert data["providers"][0]["status"] == "ok"
+
+
 def test_main_export_audit_to_stdout(monkeypatch, capsys, tmp_path: Path):
     monkeypatch.setenv("CUE_STATE_DB_PATH", str(tmp_path / "state.db"))
     monkeypatch.setattr(sys, "argv", ["cue-agent", "--export-audit-format", "json", "--audit-limit", "5"])

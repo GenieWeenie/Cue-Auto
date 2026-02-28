@@ -344,6 +344,70 @@ async def test_health_server_start_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_dashboard_recent_errors_card():
+    """Home dashboard shows Recent errors card from snapshot.recent_errors."""
+    snapshot = {
+        "runtime": {},
+        "providers": {},
+        "queue": {"task_queue": {}},
+        "recent_errors": [
+            {
+                "timestamp_utc": "2026-02-28T12:00:00+00:00",
+                "message": "Provider openai rate limit",
+                "outcome": "failure",
+            }
+        ],
+    }
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=lambda: {"status": "ok"},
+        dashboard_enabled=True,
+        dashboard_status_provider=lambda: snapshot,
+        dashboard_username="u",
+        dashboard_password="p",
+    )
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        auth = _basic_auth_header("u", "p")
+        status_code, _, body = await _raw_request("/dashboard", server.bound_port, headers=auth)
+        assert status_code == 200
+        html = body.decode("utf-8")
+        assert "Recent errors" in html
+        assert "Provider openai rate limit" in html
+        assert "failure" in html
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_recent_errors_empty_shows_no_recent_errors():
+    """When recent_errors is missing or empty, card shows 'No recent errors'."""
+    snapshot = {"runtime": {}, "providers": {}, "queue": {"task_queue": {}}}
+    server = HealthServer(
+        host="127.0.0.1",
+        port=0,
+        status_provider=lambda: {"status": "ok"},
+        dashboard_enabled=True,
+        dashboard_status_provider=lambda: snapshot,
+        dashboard_username="u",
+        dashboard_password="p",
+    )
+    await server.start()
+    try:
+        assert server.bound_port is not None
+        auth = _basic_auth_header("u", "p")
+        status_code, _, body = await _raw_request("/dashboard", server.bound_port, headers=auth)
+        assert status_code == 200
+        html = body.decode("utf-8")
+        assert "Recent errors" in html
+        assert "No recent errors" in html
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
 async def test_health_server_status_provider_raises_returns_500():
     """When status_provider raises, response is 500 internal_error."""
 

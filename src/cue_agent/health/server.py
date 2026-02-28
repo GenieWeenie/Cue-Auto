@@ -213,6 +213,7 @@ class HealthServer:
         queue = snapshot.get("queue", {})
         queue_stats = queue.get("task_queue", {}) if isinstance(queue, dict) else {}
         provider_lines = self._provider_badges(providers)
+        recent_errors_html = self._recent_errors_card(snapshot.get("recent_errors", [])[:5])
         return self._wrap_dashboard_html(
             title="CueAgent Dashboard",
             subtitle="Home",
@@ -224,6 +225,7 @@ class HealthServer:
                 f"{self._card('Multi-Agent', self._agent_lines(agents))}"
                 f"{self._card('Workflows', self._workflow_lines(workflows))}"
                 f"{self._card('Task Queue', self._queue_lines(queue_stats))}"
+                f"{recent_errors_html}"
                 "</section>"
             ),
         )
@@ -415,6 +417,25 @@ class HealthServer:
         if not text:
             return "No active task."
         return f"<code>{escape(text)}</code>"
+
+    def _recent_errors_card(self, recent_errors: list[Any]) -> str:
+        """Render a card for recent_errors (list of dicts with timestamp_utc, message, outcome)."""
+        if not isinstance(recent_errors, list):
+            recent_errors = []
+        items = [e for e in recent_errors if isinstance(e, dict)][:5]
+        if not items:
+            return self._card("Recent errors", "No recent errors.")
+        rows: list[str] = []
+        for row in items:
+            ts = escape(str(row.get("timestamp_utc", "")))
+            msg = escape(str(row.get("message", "")))
+            outcome = escape(str(row.get("outcome", "")))
+            rows.append(f"<tr><td><code>{ts}</code></td><td>{msg}</td><td>{outcome}</td></tr>")
+        table = (
+            "<table><thead><tr><th>Time (UTC)</th><th>Message</th><th>Outcome</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+        )
+        return self._card("Recent errors", table)
 
     def _card(self, title: str, content_html: str) -> str:
         return f"<div class='card'><h2>{escape(title)}</h2>{content_html}</div>"
