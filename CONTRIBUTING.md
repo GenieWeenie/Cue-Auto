@@ -52,7 +52,7 @@ ruff format src tests
 
 - Prefer a short-lived branch per change (e.g. `fix/telegram-retry`, `docs/contributing`).
 - Open a PR against `master` (or `main` if the default branch changes).
-- Ensure CI passes (Ruff, mypy, pytest with coverage).
+- **All PRs must pass the Quality Gates CI** (Ruff, mypy, pytest with coverage ≥80%) before merge. Fix any new Ruff or mypy issues before pushing.
 - Keep PRs focused; split large changes into smaller ones where possible.
 
 ## Configuration

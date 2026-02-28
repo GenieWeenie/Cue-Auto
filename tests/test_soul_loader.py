@@ -21,6 +21,18 @@ def test_load_missing_file():
     assert loader.load() == ""
 
 
+def test_load_caching():
+    """Second load returns cached content without re-reading file."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+        f.write("# Cached\nContent here.")
+        f.flush()
+        loader = SoulLoader(f.name)
+        first = loader.load()
+        second = loader.load()
+        assert first == second == "# Cached\nContent here."
+    os.unlink(f.name)
+
+
 def test_inject_prepends_identity():
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
         f.write("I am CueAgent.")

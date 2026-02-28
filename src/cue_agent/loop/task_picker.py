@@ -23,7 +23,7 @@ What is the single most important task to do next?"""
 
 
 class TaskPicker:
-    def __init__(self, brain: CueBrain):
+    def __init__(self, brain: CueBrain) -> None:
         self._brain = brain
 
     def pick(self, context: str) -> str | None:

@@ -24,9 +24,9 @@ Use this list to track fixes and improvements. Items are mirrored as issues in t
 ## Code quality & maintenance
 
 - [x] **Pin EAP dependency** — In `pyproject.toml`, pin `efficient-agent-protocol` to a tag or commit hash for reproducible installs.
-- [ ] **Coverage** — Keep coverage ≥80%; add tests for any critical paths that drop below or for new features.
-- [ ] **Ruff / mypy** — Fix any new Ruff or mypy issues before merging; keep CI green.
-- [ ] **Type hints** — Gradually add return types and stricter typing on public APIs where it helps.
+- [x] **Coverage** — Keep coverage ≥80%; add tests for any critical paths that drop below or for new features.
+- [x] **Ruff / mypy** — Fix any new Ruff or mypy issues before merging; keep CI green.
+- [x] **Type hints** — Gradually add return types and stricter typing on public APIs where it helps.
 
 ---
 

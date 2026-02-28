@@ -18,6 +18,9 @@ All notable changes to CueAgent are documented here. The format is based on [Kee
 - docs/skills-sdk.md: "Skill marketplace" section (registry location, usage, how to submit).
 - docs/observability.md: logging, cost/latency/errors, optional metrics extensions.
 - docs/deployment.md: link to observability.md.
+- CONTRIBUTING: PRs must pass Quality Gates CI; fix Ruff/mypy before pushing.
+- test_soul_loader: add test_load_caching for cache-hit path.
+- Verifier, TaskPicker, SkillTestHarness: add explicit `-> None` on __init__ for typing.
 
 ### Changed
 
