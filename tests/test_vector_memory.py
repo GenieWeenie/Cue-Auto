@@ -227,3 +227,144 @@ def test_vector_memory_recall_survives_restart_with_persistent_store(monkeypatch
     vm2 = VectorMemory(cfg)
     recalled = vm2.recall("chat-r", "persistent", limit=5)
     assert "remember persistent note" in recalled
+
+
+def test_vector_memory_list_chat_ids(monkeypatch):
+    """list_chat_ids returns sorted chat IDs present in the store."""
+    stores = _make_stores()
+    _inject_fake_chromadb(monkeypatch, stores)
+
+    vm = VectorMemory(
+        CueConfig(
+            vector_memory_enabled=True,
+            vector_memory_path="p",
+            vector_memory_collection="c",
+        )
+    )
+    vm.add_turn("chat-1", "user", "a")
+    vm.add_turn("chat-2", "user", "b")
+    vm.add_turn("chat-1", "assistant", "c")
+    ids = vm.list_chat_ids()
+    assert ids == ["chat-1", "chat-2"]
+
+
+def test_vector_memory_consolidate_all(monkeypatch):
+    """consolidate_all returns stats across all chats."""
+    stores = _make_stores()
+    _inject_fake_chromadb(monkeypatch, stores)
+
+    vm = VectorMemory(
+        CueConfig(
+            vector_memory_enabled=True,
+            vector_memory_path="p",
+            vector_memory_collection="c",
+        )
+    )
+    for i in range(5):
+        vm.add_turn("chat-x", "user", f"x-{i}")
+    for i in range(3):
+        vm.add_turn("chat-y", "user", f"y-{i}")
+
+    result = vm.consolidate_all(
+        summarizer=lambda _chat, items: "SUM:" + "|".join(items),
+        min_entries=2,
+        keep_recent=1,
+        max_items=50,
+    )
+    assert result["consolidated_chats"] >= 1
+    assert result["deleted_entries"] >= 1
+
+
+def test_vector_memory_recall_empty_query_returns_empty(monkeypatch):
+    """recall with empty or whitespace query returns ''."""
+    stores = _make_stores()
+    _inject_fake_chromadb(monkeypatch, stores)
+
+    vm = VectorMemory(
+        CueConfig(
+            vector_memory_enabled=True,
+            vector_memory_path="p",
+            vector_memory_collection="c",
+        )
+    )
+    vm.add_turn("chat-q", "user", "something")
+    assert vm.recall("chat-q", "") == ""
+    assert vm.recall("chat-q", "   ") == ""
+
+
+def test_vector_memory_consolidate_uses_fallback_summary_when_no_summarizer(monkeypatch):
+    """When summarizer is None, _build_summary uses deterministic fallback."""
+    stores = _make_stores()
+    _inject_fake_chromadb(monkeypatch, stores)
+
+    vm = VectorMemory(
+        CueConfig(
+            vector_memory_enabled=True,
+            vector_memory_path="p",
+            vector_memory_collection="c",
+        )
+    )
+    for i in range(4):
+        vm.add_turn("chat-f", "user", f"fallback line {i}")
+
+    deleted = vm.consolidate_chat(
+        "chat-f",
+        summarizer=None,
+        min_entries=3,
+        keep_recent=1,
+        max_items=50,
+    )
+    assert deleted >= 1
+    recalled = vm.recall("chat-f", "fallback", limit=5)
+    assert "Consolidated memory summary" in recalled
+    assert "fallback line" in recalled
+
+
+def _make_stores():
+    return {}
+
+
+def _inject_fake_chromadb(monkeypatch, stores):
+    class _FakeCollection:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def add(self, ids, documents, metadatas):
+            for doc_id, doc, metadata in zip(ids, documents, metadatas):
+                self._rows.append({"id": doc_id, "doc": doc, "metadata": metadata})
+
+        def query(self, query_texts, n_results, where):
+            del query_texts
+            chat_id = where.get("chat_id")
+            docs = [row["doc"] for row in self._rows if row["metadata"].get("chat_id") == chat_id]
+            return {"documents": [docs[:n_results]]}
+
+        def get(self, where=None, include=None, limit=None):
+            del include
+            filtered = list(self._rows)
+            if where:
+                for key, value in where.items():
+                    filtered = [r for r in filtered if r["metadata"].get(key) == value]
+            if limit is not None:
+                filtered = filtered[:limit]
+            return {
+                "ids": [r["id"] for r in filtered],
+                "documents": [r["doc"] for r in filtered],
+                "metadatas": [r["metadata"] for r in filtered],
+            }
+
+        def delete(self, ids):
+            id_set = set(ids)
+            self._rows[:] = [row for row in self._rows if row["id"] not in id_set]
+
+    class _FakeClient:
+        def __init__(self, path: str):
+            self._path = path
+
+        def get_or_create_collection(self, name: str):
+            key = f"{self._path}:{name}"
+            rows = stores.setdefault(key, [])
+            return _FakeCollection(rows)
+
+    fake = SimpleNamespace(PersistentClient=_FakeClient)
+    monkeypatch.setattr("cue_agent.memory.vector_memory.import_module", lambda _: fake)
