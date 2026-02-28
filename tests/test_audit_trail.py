@@ -16,6 +16,7 @@ def test_audit_trail_records_and_filters():
         risk_level="high",
         approval_state="required",
         outcome="success",
+        user_id="u-admin",
         details={"cmd": "ls"},
         timestamp_utc="2026-02-01T10:00:00+00:00",
     )
@@ -26,6 +27,7 @@ def test_audit_trail_records_and_filters():
         risk_level="low",
         approval_state="not_required",
         outcome="error",
+        user_id="u-operator",
         details={"error": "timeout"},
         timestamp_utc="2026-02-02T10:00:00+00:00",
     )
@@ -38,6 +40,10 @@ def test_audit_trail_records_and_filters():
     date_filtered = trail.query(AuditQuery(start_utc="2026-02-02", end_utc="2026-02-02", limit=10))
     assert len(date_filtered) == 1
     assert date_filtered[0]["action"] == "chat_completion"
+
+    user_filtered = trail.query(AuditQuery(user_id="u-admin", limit=10))
+    assert len(user_filtered) == 1
+    assert user_filtered[0]["action"] == "run_shell"
 
 
 def test_audit_trail_cleanup_deletes_old_rows():
@@ -72,6 +78,7 @@ def test_audit_export_formats():
             "approval_state": "not_required",
             "outcome": "success",
             "chat_id": "chat-1",
+            "user_id": "u1",
             "run_id": "",
             "duration_ms": 12,
             "details": {"path": "README.md"},

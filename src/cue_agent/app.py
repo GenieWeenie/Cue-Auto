@@ -35,6 +35,7 @@ from cue_agent.memory.vector_memory import VectorMemory
 from cue_agent.notifications.manager import NotificationManager
 from cue_agent.security.approval_gate import ApprovalGate
 from cue_agent.security.risk_classifier import RiskClassifier
+from cue_agent.security.user_access import UserAccessStore, has_permission, is_approver
 from cue_agent.skills.loader import SkillLoader
 from cue_agent.skills.watcher import SkillWatcher
 
@@ -56,6 +57,8 @@ class CueApp:
         self.state_manager = StateManager(db_path=self.config.state_db_path)
         self.task_queue = TaskQueue(db_path=self.config.state_db_path)
         self.audit_trail = AuditTrail(db_path=self.config.state_db_path)
+        self.user_access = UserAccessStore(db_path=self.config.state_db_path)
+        self._bootstrap_access_roles()
 
         # --- Brain ---
         self.soul_loader = SoulLoader(self.config.soul_md_path)
@@ -151,33 +154,143 @@ class CueApp:
     def _setup_logging(self) -> None:
         setup_logging()
 
+    def _bootstrap_access_roles(self) -> None:
+        admin_ids: list[str] = []
+        for raw in getattr(self.config, "telegram_admin_user_ids", []):
+            value = str(raw).strip()
+            if value:
+                admin_ids.append(value)
+        if getattr(self.config, "telegram_admin_chat_id", 0) > 0:
+            admin_ids.append(str(self.config.telegram_admin_chat_id))
+
+        for user_id in admin_ids:
+            self.user_access.set_role(user_id, "admin", actor_user_id="system")
+
+        for raw in getattr(self.config, "telegram_operator_user_ids", []):
+            user_id = str(raw).strip()
+            if not user_id:
+                continue
+            current = self.user_access.get_user(user_id)
+            if current and current.get("role") == "admin":
+                continue
+            self.user_access.set_role(user_id, "operator", actor_user_id="system")
+
+    def _ensure_user_role(self, msg: UnifiedMessage) -> str:
+        row = self.user_access.upsert_user(
+            msg.user_id,
+            username=msg.username,
+            display_name=msg.username,
+            default_role="user",
+            created_by="telegram",
+        )
+        role = row.get("role", "user")
+        if (
+            getattr(self.config, "multi_user_enabled", True)
+            and getattr(self.config, "multi_user_bootstrap_first_user", True)
+            and not self.user_access.has_any_role("admin")
+        ):
+            promoted = self.user_access.set_role(msg.user_id, "admin", actor_user_id="bootstrap")
+            role = promoted.get("role", role)
+            logger.warning(
+                "Bootstrapped first user as admin",
+                extra={"event": "access_bootstrap_admin", "user_id": msg.user_id},
+            )
+        return role
+
+    def _conversation_scope_key(self, msg: UnifiedMessage) -> str:
+        if not getattr(self.config, "multi_user_enabled", True):
+            return msg.chat_id
+        return f"{msg.platform}:{msg.chat_id}:{msg.user_id}"
+
+    def _command_permission(self, command: str, parts: list[str]) -> str | None:
+        if command == "/help":
+            return "help"
+        if command == "/status":
+            return "status"
+        if command == "/skills":
+            return "skills"
+        if command == "/settings":
+            return "settings"
+        if command == "/approve":
+            return "approve.view"
+        if command == "/audit":
+            return "audit.export"
+        if command == "/tasks":
+            return "tasks.view"
+        if command == "/usage":
+            return "usage"
+        if command == "/task":
+            return "tasks.manage"
+        if command == "/users":
+            sub = parts[1].lower() if len(parts) > 1 else ""
+            return "users.self" if sub in {"", "me", "whoami", "help", "?"} else "users.manage"
+        return None
+
+    def _deny_access(self, *, msg: UnifiedMessage, role: str, command: str, permission: str) -> UnifiedResponse:
+        logger.warning(
+            "Access denied",
+            extra={
+                "event": "access_denied",
+                "user_id": msg.user_id,
+                "username": msg.username,
+                "role": role,
+                "command": command,
+                "permission": permission,
+            },
+        )
+        self._record_audit_event(
+            event_type="authorization",
+            action=command,
+            risk_level="medium",
+            outcome="denied",
+            chat_id=msg.chat_id,
+            user_id=msg.user_id,
+            details={
+                "role": role,
+                "permission": permission,
+                "username": msg.username,
+            },
+        )
+        return UnifiedResponse(
+            text=f"Access denied: role `{role}` is not allowed to run `{command}`.",
+            chat_id=msg.chat_id,
+        )
+
     async def _handle_message(self, msg: UnifiedMessage) -> UnifiedResponse:
         """Process an incoming message through the brain."""
         if not get_correlation_id():
             with correlation_context(new_correlation_id("tg")):
                 return await self._handle_message(msg)
 
+        role = self._ensure_user_role(msg) if getattr(self.config, "multi_user_enabled", True) else "admin"
+
         self._record_audit_event(
             event_type="conversation",
             action="user_message",
             outcome="received",
             chat_id=msg.chat_id,
+            user_id=msg.user_id,
             details={
                 "platform": msg.platform,
                 "user_id": msg.user_id,
                 "username": msg.username,
+                "role": role,
                 "text_preview": msg.text[:240],
             },
         )
 
-        command_response = self._handle_commands(msg)
+        command_response = self._handle_commands(msg, role)
         if command_response is not None:
             return command_response
 
-        self.memory.add_turn(msg.chat_id, "user", msg.text)
-        self.vector_memory.add_turn(msg.chat_id, "user", msg.text)
-        context = self.memory.get_context(msg.chat_id)
-        vector_context = self.vector_memory.recall_as_context(msg.chat_id, msg.text)
+        if not has_permission(role, "chat"):
+            return self._deny_access(msg=msg, role=role, command="/chat", permission="chat")
+
+        scope_key = self._conversation_scope_key(msg)
+        self.memory.add_turn(scope_key, "user", msg.text)
+        self.vector_memory.add_turn(scope_key, "user", msg.text)
+        context = self.memory.get_context(scope_key)
+        vector_context = self.vector_memory.recall_as_context(scope_key, msg.text)
         if vector_context:
             context = f"{context}\n\n{vector_context}" if context else vector_context
         llm_started = time.monotonic()
@@ -190,6 +303,7 @@ class CueApp:
                 risk_level="low",
                 outcome="success",
                 chat_id=msg.chat_id,
+                user_id=msg.user_id,
                 duration_ms=int((time.monotonic() - llm_started) * 1000),
                 details={"queued_messages": len(self._queued_messages)},
             )
@@ -219,6 +333,7 @@ class CueApp:
                 risk_level="high",
                 outcome="provider_outage",
                 chat_id=msg.chat_id,
+                user_id=msg.user_id,
                 duration_ms=int((time.monotonic() - llm_started) * 1000),
                 details={"provider_status": exc.provider_status},
             )
@@ -233,29 +348,34 @@ class CueApp:
                 risk_level="high",
                 outcome="error",
                 chat_id=msg.chat_id,
+                user_id=msg.user_id,
                 duration_ms=int((time.monotonic() - llm_started) * 1000),
                 details={"error": str(exc)},
             )
             raise
 
-        self.memory.add_turn(msg.chat_id, "assistant", response_text)
-        self.vector_memory.add_turn(msg.chat_id, "assistant", response_text)
+        self.memory.add_turn(scope_key, "assistant", response_text)
+        self.vector_memory.add_turn(scope_key, "assistant", response_text)
         self._record_audit_event(
             event_type="conversation",
             action="assistant_message",
             outcome="sent",
             chat_id=msg.chat_id,
+            user_id=msg.user_id,
             details={"text_preview": response_text[:240]},
         )
         return UnifiedResponse(text=response_text, chat_id=msg.chat_id)
 
-    def _handle_commands(self, msg: UnifiedMessage) -> UnifiedResponse | None:
+    def _handle_commands(self, msg: UnifiedMessage, role: str) -> UnifiedResponse | None:
         text = msg.text.strip()
         if not text.startswith("/"):
             return None
 
         parts = text.split()
         command = parts[0].lower()
+        permission = self._command_permission(command, parts)
+        if getattr(self.config, "multi_user_enabled", True) and permission and not has_permission(role, permission):
+            return self._deny_access(msg=msg, role=role, command=command, permission=permission)
 
         try:
             if command == "/help":
@@ -278,6 +398,9 @@ class CueApp:
 
             if command == "/audit":
                 return self._handle_audit_command(msg, parts[1:])
+
+            if command == "/users":
+                return self._handle_users_command(msg, parts[1:], role)
 
             if command == "/tasks":
                 mode = parts[1].lower() if len(parts) > 1 else ""
@@ -407,6 +530,7 @@ class CueApp:
         risk: str | None = None
         outcome: str | None = None
         approval: str | None = None
+        user_id: str | None = None
         start_utc: str | None = None
         end_utc: str | None = None
         limit = 200
@@ -440,6 +564,8 @@ class CueApp:
                     outcome = value
                 elif key == "approval":
                     approval = value
+                elif key in {"user", "user_id"}:
+                    user_id = value
                 elif key in {"start", "from"}:
                     start_utc = value
                 elif key in {"end", "to"}:
@@ -462,6 +588,7 @@ class CueApp:
             risk=risk,
             outcome=outcome,
             approval=approval,
+            user_id=user_id,
             limit=limit,
         )
         try:
@@ -476,6 +603,7 @@ class CueApp:
             risk_level=risk or "",
             outcome="success",
             chat_id=msg.chat_id,
+            user_id=msg.user_id,
             details={
                 "rows": len(rows),
                 "filters": {
@@ -484,6 +612,7 @@ class CueApp:
                     "risk": risk,
                     "outcome": outcome,
                     "approval": approval,
+                    "user_id": user_id,
                     "start_utc": start_utc,
                     "end_utc": end_utc,
                     "limit": limit,
@@ -497,6 +626,80 @@ class CueApp:
             document_bytes=payload,
         )
 
+    def _handle_users_command(self, msg: UnifiedMessage, args: list[str], role: str) -> UnifiedResponse:
+        if not getattr(self.config, "multi_user_enabled", True):
+            return UnifiedResponse(text="Multi-user access control is disabled.", chat_id=msg.chat_id)
+
+        if not args or args[0].lower() in {"help", "?"}:
+            return UnifiedResponse(text=self._users_help_text(), chat_id=msg.chat_id)
+
+        sub = args[0].lower()
+        if sub in {"me", "whoami"}:
+            row = self.user_access.get_user(msg.user_id) or {}
+            return UnifiedResponse(
+                text=(
+                    "*User Profile*\n"
+                    f"- user_id: `{msg.user_id}`\n"
+                    f"- username: `{row.get('username', msg.username)}`\n"
+                    f"- role: `{row.get('role', role)}`"
+                ),
+                chat_id=msg.chat_id,
+            )
+
+        if sub == "list":
+            rows = self.user_access.list_users(limit=100)
+            lines = ["*User Access List*"]
+            for row in rows:
+                lines.append(f"- `{row['user_id']}` role=`{row['role']}` username=`{row['username']}`")
+            if not rows:
+                lines.append("- none")
+            return UnifiedResponse(text="\n".join(lines), chat_id=msg.chat_id)
+
+        if sub in {"add", "set", "role"}:
+            if len(args) < 3:
+                return UnifiedResponse(
+                    text="Usage: /users role <user_id> <admin|operator|user|readonly>", chat_id=msg.chat_id
+                )
+            target_user_id = args[1]
+            target_role = args[2]
+            try:
+                row = self.user_access.set_role(target_user_id, target_role, actor_user_id=msg.user_id)
+            except ValueError as exc:
+                return UnifiedResponse(text=f"User command error: {exc}", chat_id=msg.chat_id)
+            self._record_audit_event(
+                event_type="authorization",
+                action="user_role_set",
+                outcome="success",
+                chat_id=msg.chat_id,
+                user_id=msg.user_id,
+                details={"target_user_id": target_user_id, "new_role": row.get("role", target_role)},
+            )
+            return UnifiedResponse(
+                text=f"Set `{target_user_id}` role to `{row['role']}`.",
+                chat_id=msg.chat_id,
+            )
+
+        if sub in {"remove", "delete"}:
+            if len(args) != 2:
+                return UnifiedResponse(text="Usage: /users remove <user_id>", chat_id=msg.chat_id)
+            target_user_id = args[1].strip()
+            if target_user_id == msg.user_id:
+                return UnifiedResponse(text="You cannot remove your own access.", chat_id=msg.chat_id)
+            removed = self.user_access.delete_user(target_user_id)
+            self._record_audit_event(
+                event_type="authorization",
+                action="user_removed",
+                outcome="success" if removed else "not_found",
+                chat_id=msg.chat_id,
+                user_id=msg.user_id,
+                details={"target_user_id": target_user_id},
+            )
+            if removed:
+                return UnifiedResponse(text=f"Removed user `{target_user_id}`.", chat_id=msg.chat_id)
+            return UnifiedResponse(text=f"User `{target_user_id}` not found.", chat_id=msg.chat_id)
+
+        return UnifiedResponse(text=self._users_help_text(), chat_id=msg.chat_id)
+
     def _task_help_text(self) -> str:
         return (
             "Task commands:\n"
@@ -505,7 +708,9 @@ class CueApp:
             "- /skills\n"
             "- /settings\n"
             "- /approve\n"
-            "- /audit [json|csv|markdown] [event=...] [risk=...] [outcome=...] [start=YYYY-MM-DD] [end=YYYY-MM-DD]\n"
+            "- /audit [json|csv|markdown] [event=...] [risk=...] [outcome=...] [user=...] "
+            "[start=YYYY-MM-DD] [end=YYYY-MM-DD]\n"
+            "- /users me | /users list | /users role <user_id> <role> | /users remove <user_id>\n"
             "- /tasks [status|all]\n"
             "- /tasks download\n"
             "- /task add [p1|p2|p3|p4] <title>\n"
@@ -526,6 +731,7 @@ class CueApp:
             "- `/skills` Loaded skills and tool counts\n"
             "- `/usage` Provider usage and spend\n"
             "- `/approve` Pending approval requests\n"
+            "- `/users ...` User access and role management\n"
             "- `/settings` Runtime settings snapshot"
         )
 
@@ -533,8 +739,18 @@ class CueApp:
     def _audit_help_text() -> str:
         return (
             "Usage: /audit [json|csv|markdown] [limit] "
-            "[event=...] [action=...] [risk=...] [approval=...] [outcome=...] "
+            "[event=...] [action=...] [risk=...] [approval=...] [outcome=...] [user=...] "
             "[start=YYYY-MM-DD] [end=YYYY-MM-DD]"
+        )
+
+    @staticmethod
+    def _users_help_text() -> str:
+        return (
+            "User commands:\n"
+            "- /users me\n"
+            "- /users list\n"
+            "- /users role <user_id> <admin|operator|user|readonly>\n"
+            "- /users remove <user_id>"
         )
 
     def _status_text(self) -> str:
@@ -545,6 +761,7 @@ class CueApp:
         notifications = status.get("notifications", {})
         memory = status.get("memory", {})
         telegram = status.get("telegram", {})
+        access = status.get("access", {})
 
         provider_line = ", ".join(f"{k}:{v}" for k, v in providers.items()) if isinstance(providers, dict) else "n/a"
         queue_stats = queue.get("task_queue", {}) if isinstance(queue, dict) else {}
@@ -559,12 +776,24 @@ class CueApp:
                     f"requests={webhook.get('request_count', 0)} "
                     f"rejected={webhook.get('rejected_count', 0)}"
                 )
+        users_line = "n/a"
+        if isinstance(access, dict):
+            counts = access.get("role_counts", {})
+            if isinstance(counts, dict):
+                users_line = (
+                    f"total={access.get('total_users', 0)} "
+                    f"admin={counts.get('admin', 0)} "
+                    f"operator={counts.get('operator', 0)} "
+                    f"user={counts.get('user', 0)} "
+                    f"readonly={counts.get('readonly', 0)}"
+                )
         return (
             "*CueAgent Status*\n"
             f"- Time (UTC): `{status.get('timestamp_utc', 'n/a')}`\n"
             f"- Loop: `enabled={loop.get('enabled', False)}` `running={loop.get('running', False)}`\n"
             f"- Providers: {provider_line}\n"
             f"- Telegram webhook: `{webhook_line}`\n"
+            f"- Access: `{users_line}`\n"
             f"- Queue: {queue_line}\n"
             f"- Notifications: `enabled={notifications.get('enabled', False)}` "
             f"`mode={notifications.get('mode', 'n/a')}` `queued={notifications.get('queued', 0)}`\n"
@@ -595,6 +824,7 @@ class CueApp:
             f"- Quiet hours: `{self.config.notification_quiet_hours_start}:00-{self.config.notification_quiet_hours_end}:00` "
             f"{self.config.notification_timezone}\n"
             f"- Search provider: `{self.config.search_provider}`\n"
+            f"- Multi-user access: `{getattr(self.config, 'multi_user_enabled', True)}`\n"
             f"- Audit retention: `{self.config.audit_retention_days}` days "
             f"(`{self.config.audit_cleanup_cron}`)"
         )
@@ -693,6 +923,7 @@ class CueApp:
         approval_state: str = "",
         outcome: str = "",
         chat_id: str = "",
+        user_id: str = "",
         run_id: str = "",
         duration_ms: int = 0,
         details: dict[str, Any] | None = None,
@@ -707,6 +938,7 @@ class CueApp:
                 approval_state=approval_state,
                 outcome=outcome,
                 chat_id=chat_id,
+                user_id=user_id,
                 run_id=run_id,
                 duration_ms=duration_ms,
                 details=details,
@@ -844,17 +1076,44 @@ class CueApp:
         if self.notification_manager is not None:
             await self.notification_manager.flush(force=True, batched=False)
 
-    async def _handle_approval(self, approval_id: str, approved: bool) -> None:
+    async def _handle_approval(
+        self,
+        approval_id: str,
+        approved: bool,
+        actor: UnifiedMessage | None = None,
+    ) -> bool:
         """Route Telegram approval callbacks to the approval gateway."""
+        actor_user_id = actor.user_id if actor is not None else ""
+        actor_chat_id = actor.chat_id if actor is not None else ""
+        actor_role = "admin"
+        if actor is not None and getattr(self.config, "multi_user_enabled", True):
+            actor_role = self._ensure_user_role(actor)
+            if not is_approver(actor_role):
+                self._record_audit_event(
+                    event_type="approval",
+                    action=approval_id,
+                    risk_level="high",
+                    approval_state="rejected",
+                    outcome="unauthorized_actor",
+                    chat_id=actor_chat_id,
+                    user_id=actor_user_id,
+                    details={"role": actor_role},
+                )
+                return False
+
         self._record_audit_event(
             event_type="approval",
             action=approval_id,
             risk_level="high",
             approval_state="approved" if approved else "rejected",
             outcome="handled",
+            chat_id=actor_chat_id,
+            user_id=actor_user_id,
+            details={"role": actor_role},
         )
         if self.approval_gateway:
             await self.approval_gateway.handle_callback(approval_id, approved)
+        return True
 
     async def _handle_skill_change(self, path: Path, event_type: str) -> None:
         """Handle skill file changes for hot-reload."""
@@ -1064,6 +1323,8 @@ class CueApp:
         }
         if self.telegram is not None:
             telegram_diag["webhook"] = self.telegram.webhook_diagnostics()
+        multi_user_enabled = getattr(self.config, "multi_user_enabled", True)
+        role_counts = self.user_access.role_counts() if multi_user_enabled else {}
         return {
             "status": "ok",
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -1092,6 +1353,11 @@ class CueApp:
                 "vector_available": self.vector_memory.is_available,
             },
             "telegram": telegram_diag,
+            "access": {
+                "multi_user_enabled": multi_user_enabled,
+                "total_users": self.user_access.total_users() if multi_user_enabled else 0,
+                "role_counts": role_counts,
+            },
         }
 
     def _build_dashboard_snapshot(self) -> dict[str, Any]:
@@ -1116,6 +1382,7 @@ class CueApp:
             "provider_metrics": provider_metrics,
             "queue": queue,
             "telegram": health.get("telegram", {}),
+            "access": health.get("access", {}),
             "tasks": tasks,
             "actions": list(reversed(self._action_timeline[-100:])),
             "config": {
@@ -1126,6 +1393,7 @@ class CueApp:
                 "dashboard_enabled": self.config.dashboard_enabled,
                 "healthcheck_port": self.config.healthcheck_port,
                 "vector_memory_enabled": self.config.vector_memory_enabled,
+                "multi_user_enabled": getattr(self.config, "multi_user_enabled", True),
             },
         }
 

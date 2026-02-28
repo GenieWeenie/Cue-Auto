@@ -114,6 +114,8 @@ def _install_fakes(
             self.circuit_breaker_failures = 3
             self.circuit_breaker_cooldown_seconds = 5
             self.telegram_bot_token = "token" if has_telegram else ""
+            self.telegram_admin_user_ids = []
+            self.telegram_operator_user_ids = []
             self.telegram_webhook_url = ""
             self.telegram_webhook_listen_host = "127.0.0.1"
             self.telegram_webhook_listen_port = 0
@@ -136,6 +138,8 @@ def _install_fakes(
             self.llm_cost_openrouter_output_per_1k = 0.01
             self.llm_cost_lmstudio_input_per_1k = 0.0
             self.llm_cost_lmstudio_output_per_1k = 0.0
+            self.multi_user_enabled = True
+            self.multi_user_bootstrap_first_user = True
 
     class FakeStateManager:
         def __init__(self, db_path):  # noqa: ARG002
@@ -489,10 +493,13 @@ async def test_app_init_without_telegram_and_handle_message(monkeypatch):
     assert app.telegram is None
     assert response.chat_id == "chat-1"
     assert response.text == "reply:ctx|hello"
+    assert t.memory_turns[0][0] == "telegram:chat-1:u1"
     assert [turn[1] for turn in t.memory_turns] == ["user", "assistant"]
     assert t.vector_turns == []
     assert t.vector_recalls == []
     assert t.action_registry_bots == [None]
+    rows = app.audit_trail.query(app_module.AuditQuery(limit=5))
+    assert rows[0]["user_id"] == "u1"
     health = app._build_health_status()
     assert health["status"] == "ok"
     assert health["providers"] == {"openai": "unknown"}
@@ -531,7 +538,7 @@ async def test_app_includes_vector_context_when_enabled(monkeypatch):
     response = await app._handle_message(msg)
 
     assert "Long-term semantic memory" in response.text
-    assert t.vector_recalls == [("chat-1", "hello", None)]
+    assert t.vector_recalls == [("telegram:chat-1:u1", "hello", None)]
     assert [turn[1] for turn in t.vector_turns] == ["user", "assistant"]
 
 
@@ -616,6 +623,37 @@ async def test_app_task_commands(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_app_users_command_permissions(monkeypatch):
+    _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+
+    me_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u1", text="/users me")
+    me_response = await app._handle_message(me_msg)
+    assert "User Profile" in me_response.text
+    assert "u1" in me_response.text
+
+    denied_msg = UnifiedMessage(
+        platform="telegram",
+        chat_id="chat-1",
+        user_id="u1",
+        text="/users role u2 operator",
+    )
+    denied_response = await app._handle_message(denied_msg)
+    assert "Access denied" in denied_response.text
+
+
+@pytest.mark.asyncio
+async def test_app_blocks_readonly_task_mutations(monkeypatch):
+    _install_fakes(monkeypatch, has_telegram=False)
+    app = app_module.CueApp()
+    app.user_access.set_role("u-read", "readonly", actor_user_id="admin")
+
+    msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u-read", text="/task add p2 Do x")
+    response = await app._handle_message(msg)
+    assert "Access denied" in response.text
+
+
+@pytest.mark.asyncio
 async def test_app_telegram_branch_approval_and_skill_change(monkeypatch, tmp_path: Path):
     t = _install_fakes(monkeypatch, has_telegram=True)
     app = app_module.CueApp()
@@ -657,6 +695,24 @@ async def test_app_telegram_branch_approval_and_skill_change(monkeypatch, tmp_pa
     )
     assert any(event["category"] == "budget_warning" for event in t.notification_events)
     assert any(event["category"] == "high_risk_action" for event in t.notification_events)
+
+
+@pytest.mark.asyncio
+async def test_app_approval_routing_operator_and_admin_only(monkeypatch):
+    t = _install_fakes(monkeypatch, has_telegram=True)
+    app = app_module.CueApp()
+
+    actor_user = UnifiedMessage(platform="telegram", chat_id="42", user_id="u-user", text="approve")
+    app.user_access.set_role("u-user", "user", actor_user_id="admin")
+    denied = await app._handle_approval("approval-1", True, actor_user)
+    assert denied is False
+    assert t.approval_callbacks == []
+
+    actor_operator = UnifiedMessage(platform="telegram", chat_id="42", user_id="u-op", text="approve")
+    app.user_access.set_role("u-op", "operator", actor_user_id="admin")
+    allowed = await app._handle_approval("approval-2", True, actor_operator)
+    assert allowed is True
+    assert t.approval_callbacks == [("approval-2", True)]
 
 
 @pytest.mark.asyncio

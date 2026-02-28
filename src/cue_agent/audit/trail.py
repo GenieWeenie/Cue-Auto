@@ -24,6 +24,7 @@ class AuditQuery:
     risk: str | None = None
     outcome: str | None = None
     approval: str | None = None
+    user_id: str | None = None
     limit: int = 200
 
 
@@ -49,6 +50,7 @@ class AuditTrail:
         approval_state: str = "",
         outcome: str = "",
         chat_id: str = "",
+        user_id: str = "",
         run_id: str = "",
         duration_ms: int = 0,
         details: dict[str, Any] | None = None,
@@ -61,9 +63,9 @@ class AuditTrail:
                 """
                 INSERT INTO audit_trail (
                     timestamp_utc, correlation_id, event_type, action,
-                    risk_level, approval_state, outcome, chat_id, run_id,
+                    risk_level, approval_state, outcome, chat_id, user_id, run_id,
                     duration_ms, details_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts,
@@ -74,6 +76,7 @@ class AuditTrail:
                     approval_state.strip()[:32],
                     outcome.strip()[:32],
                     chat_id.strip()[:64],
+                    user_id.strip()[:64],
                     run_id.strip()[:64],
                     max(0, int(duration_ms)),
                     payload,
@@ -109,6 +112,9 @@ class AuditTrail:
         if query.approval:
             conditions.append("approval_state = ?")
             params.append(query.approval.strip())
+        if query.user_id:
+            conditions.append("user_id = ?")
+            params.append(query.user_id.strip())
 
         where_clause = ""
         if conditions:
@@ -163,6 +169,7 @@ class AuditTrail:
                     "approval_state",
                     "outcome",
                     "chat_id",
+                    "user_id",
                     "run_id",
                     "duration_ms",
                     "details_json",
@@ -180,6 +187,7 @@ class AuditTrail:
                         row.get("approval_state"),
                         row.get("outcome"),
                         row.get("chat_id"),
+                        row.get("user_id"),
                         row.get("run_id"),
                         row.get("duration_ms"),
                         json.dumps(row.get("details", {}), ensure_ascii=True, separators=(",", ":")),
@@ -193,8 +201,8 @@ class AuditTrail:
                 f"- Generated at (UTC): `{datetime.now(timezone.utc).isoformat()}`",
                 f"- Record count: `{len(records)}`",
                 "",
-                "| timestamp_utc | event_type | action | risk | approval | outcome | duration_ms |",
-                "| --- | --- | --- | --- | --- | --- | ---: |",
+                "| timestamp_utc | event_type | action | user_id | risk | approval | outcome | duration_ms |",
+                "| --- | --- | --- | --- | --- | --- | --- | ---: |",
             ]
             for row in records:
                 lines.append(
@@ -204,6 +212,7 @@ class AuditTrail:
                             _md_cell(str(row.get("timestamp_utc", ""))),
                             _md_cell(str(row.get("event_type", ""))),
                             _md_cell(str(row.get("action", ""))),
+                            _md_cell(str(row.get("user_id", ""))),
                             _md_cell(str(row.get("risk_level", ""))),
                             _md_cell(str(row.get("approval_state", ""))),
                             _md_cell(str(row.get("outcome", ""))),
@@ -213,7 +222,7 @@ class AuditTrail:
                     + " |"
                 )
             if not records:
-                lines.append("| _none_ | _none_ | _none_ | _none_ | _none_ | _none_ | 0 |")
+                lines.append("| _none_ | _none_ | _none_ | _none_ | _none_ | _none_ | _none_ | 0 |")
             content = "\n".join(lines)
             return f"cue-agent-audit-{ts}.md", content.encode("utf-8"), "text/markdown"
         raise ValueError(f"Unsupported audit export format: {fmt}")
@@ -231,6 +240,7 @@ class AuditTrail:
                 approval_state TEXT NOT NULL DEFAULT '',
                 outcome TEXT NOT NULL DEFAULT '',
                 chat_id TEXT NOT NULL DEFAULT '',
+                user_id TEXT NOT NULL DEFAULT '',
                 run_id TEXT NOT NULL DEFAULT '',
                 duration_ms INTEGER NOT NULL DEFAULT 0,
                 details_json TEXT NOT NULL DEFAULT '{}'
@@ -242,8 +252,19 @@ class AuditTrail:
                 ON audit_trail(event_type, timestamp_utc DESC);
             CREATE INDEX IF NOT EXISTS idx_audit_risk_outcome
                 ON audit_trail(risk_level, outcome, timestamp_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_user_timestamp
+                ON audit_trail(user_id, timestamp_utc DESC);
             """
         )
+        self._ensure_column_locked("user_id", "TEXT NOT NULL DEFAULT ''")
+
+    def _ensure_column_locked(self, column_name: str, column_sql: str) -> None:
+        rows = self._conn.execute("PRAGMA table_info(audit_trail)").fetchall()
+        known = {str(row["name"]) for row in rows}
+        if column_name in known:
+            return
+        self._conn.execute(f"ALTER TABLE audit_trail ADD COLUMN {column_name} {column_sql}")
+        self._conn.commit()
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         details_raw = str(row["details_json"] or "{}")
@@ -263,6 +284,7 @@ class AuditTrail:
             "approval_state": str(row["approval_state"]),
             "outcome": str(row["outcome"]),
             "chat_id": str(row["chat_id"]),
+            "user_id": str(row["user_id"]),
             "run_id": str(row["run_id"]),
             "duration_ms": int(row["duration_ms"]),
             "details": details,

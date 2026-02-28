@@ -229,7 +229,7 @@ docker compose -f docker-compose.yml -f docker-compose.webhook.yml up -d --build
 python -m cue_agent --mode polling
 ```
 
-Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`, `/audit`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
+Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`, `/audit`, `/users`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
 
 ### Webhook Mode (Telegram HTTPS)
 
@@ -291,7 +291,8 @@ Use these in Telegram chat:
 - `/settings` — runtime settings snapshot
 - `/approve` — pending approval queue
 - `/usage` — monthly provider usage, estimated spend, and budget thresholds
-- `/audit json|csv|markdown [event=...] [risk=...] [outcome=...] [start=YYYY-MM-DD] [end=YYYY-MM-DD]` — export filtered audit trail
+- `/audit json|csv|markdown [event=...] [risk=...] [outcome=...] [user=...] [start=YYYY-MM-DD] [end=YYYY-MM-DD]` — export filtered audit trail
+- `/users me|list|role|remove` — inspect and manage user-role access
 - `/tasks` — list queued tasks
 - `/tasks pending|blocked|in_progress|failed|done|all`
 - `/tasks download|export|json` — export tasks as a JSON attachment
@@ -316,6 +317,7 @@ cue-agent --export-audit-format markdown \
   --audit-output ./data/audit.md \
   --audit-event tool_execution \
   --audit-risk high \
+  --audit-user 123456789 \
   --audit-outcome error \
   --audit-start 2026-02-01 \
   --audit-end 2026-02-28
@@ -333,6 +335,23 @@ Delivery behavior is configurable:
 - `immediate` — send events as they happen (quiet-hours respected for non-critical alerts)
 - `hourly` — batch into hourly digest messages
 - `daily` — batch into daily digest messages
+
+## Multi-User Access
+
+CueAgent supports multi-user RBAC roles persisted in SQLite:
+- `admin` — full access including user-role management
+- `operator` — operations access including approvals and audit export
+- `user` — normal usage (chat, tasks, status, usage, skills)
+- `readonly` — view-only status/tasks/skills/usage
+
+User management commands:
+- `/users me`
+- `/users list`
+- `/users role <user_id> <admin|operator|user|readonly>`
+- `/users remove <user_id>`
+
+Approval callbacks are only accepted from `admin` or `operator` users.
+Audit trail records include `user_id` for per-user tracking and filtering (`/audit ... user=<id>`).
 
 ## Skills
 
@@ -488,6 +507,8 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 | `CUE_LLM_COST_LMSTUDIO_OUTPUT_PER_1K` | `0.0` | Estimated LM Studio output token cost (USD per 1k) |
 | `CUE_TELEGRAM_BOT_TOKEN` | `""` | Telegram bot token |
 | `CUE_TELEGRAM_ADMIN_CHAT_ID` | `0` | Admin chat ID for approvals |
+| `CUE_TELEGRAM_ADMIN_USER_IDS` | `[]` | Explicit admin user IDs for RBAC bootstrap |
+| `CUE_TELEGRAM_OPERATOR_USER_IDS` | `[]` | Operator user IDs allowed to approve high-risk actions |
 | `CUE_NOTIFICATIONS_ENABLED` | `true` | Enable operational Telegram notifications |
 | `CUE_NOTIFICATION_DELIVERY_MODE` | `immediate` | Notification delivery mode: `immediate`, `hourly`, or `daily` |
 | `CUE_NOTIFICATION_PRIORITY_THRESHOLD` | `medium` | Minimum notification priority to send |
@@ -505,6 +526,8 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 | `CUE_RISK_RULES_PATH` | `skills/risk_rules.json` | Path to JSON risk policy rules file |
 | `CUE_RISK_SANDBOX_DRY_RUN` | `false` | Auto-deny non-low-risk approvals for safe policy testing |
 | `CUE_REQUIRE_APPROVAL` | `true` | Enable HITL approval gates |
+| `CUE_MULTI_USER_ENABLED` | `true` | Enable multi-user role-based access control |
+| `CUE_MULTI_USER_BOOTSTRAP_FIRST_USER` | `true` | Auto-promote first seen user to admin only when no admin exists |
 | `CUE_HEARTBEAT_ENABLED` | `false` | Enable scheduled tasks |
 | `CUE_DAILY_SUMMARY_CRON` | `0 8 * * *` | Cron for daily summary |
 | `CUE_LOOP_ENABLED` | `false` | Enable autonomous loop alongside Telegram |

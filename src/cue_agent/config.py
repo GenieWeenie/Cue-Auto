@@ -45,6 +45,8 @@ class CueConfig(BaseSettings):
     # --- Communication / Telegram ---
     telegram_bot_token: str = ""
     telegram_admin_chat_id: int = 0
+    telegram_admin_user_ids: list[str] = []
+    telegram_operator_user_ids: list[str] = []
     telegram_webhook_url: str = ""
     telegram_webhook_listen_host: str = "0.0.0.0"
     telegram_webhook_listen_port: int = 8081
@@ -91,6 +93,8 @@ class CueConfig(BaseSettings):
     risk_rules_path: str = "skills/risk_rules.json"
     risk_sandbox_dry_run: bool = False
     require_approval: bool = True
+    multi_user_enabled: bool = True
+    multi_user_bootstrap_first_user: bool = True
 
     # --- Skills ---
     skills_dir: str = "skills"

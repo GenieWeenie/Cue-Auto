@@ -30,7 +30,7 @@ from cue_agent.logging_utils import correlation_context, new_correlation_id
 logger = logging.getLogger(__name__)
 
 OnMessageCallback = Callable[[UnifiedMessage], Awaitable[UnifiedResponse]]
-OnApprovalCallback = Callable[[str, bool], Awaitable[None]]
+OnApprovalCallback = Callable[[str, bool, UnifiedMessage], Awaitable[bool]]
 
 _COMMAND_HELP: list[tuple[str, str]] = [
     ("help", "Show commands and quick actions"),
@@ -41,6 +41,7 @@ _COMMAND_HELP: list[tuple[str, str]] = [
     ("approve", "Pending approvals"),
     ("settings", "Current runtime settings"),
     ("audit", "Export audit trail"),
+    ("users", "User access controls"),
 ]
 
 _CALLBACK_TO_COMMAND: dict[str, str] = {
@@ -51,6 +52,7 @@ _CALLBACK_TO_COMMAND: dict[str, str] = {
     "usage": "/usage",
     "approve": "/approve",
     "settings": "/settings",
+    "users": "/users",
 }
 
 _MAX_MESSAGE_CHARS = 3500
@@ -86,6 +88,7 @@ class TelegramGateway:
         self.app.add_handler(CommandHandler("approve", self._handle_command_message))
         self.app.add_handler(CommandHandler("settings", self._handle_command_message))
         self.app.add_handler(CommandHandler("audit", self._handle_command_message))
+        self.app.add_handler(CommandHandler("users", self._handle_command_message))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
         self.app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, self._handle_message))
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
@@ -136,13 +139,27 @@ class TelegramGateway:
         if data.startswith(("approve:", "reject:", "deny:")):
             action, approval_id = data.split(":", 1)
             approved = action == "approve"
+            callback_message = query.message
+            actor = UnifiedMessage(
+                platform="telegram",
+                chat_id=str(getattr(callback_message, "chat_id", "unknown")),
+                user_id=str(query.from_user.id) if query.from_user else "unknown",
+                username=(query.from_user.username or query.from_user.first_name or "unknown")
+                if query.from_user
+                else "unknown",
+                text=data,
+                raw={"source": "approval_callback"},
+            )
+            accepted = True
+            if self.on_approval:
+                accepted = await self.on_approval(approval_id, approved, actor)
             label = "Approved" if approved else "Rejected"
+            if not accepted:
+                label = "Not authorized"
             await query.edit_message_text(
                 f"{label}: {approval_id}",
                 reply_markup=self._approval_result_keyboard(),
             )
-            if self.on_approval:
-                await self.on_approval(approval_id, approved)
             return
 
         if data.startswith("details:"):

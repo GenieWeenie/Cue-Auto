@@ -21,8 +21,12 @@ def test_default_config():
     assert config.notification_delivery_mode == "immediate"
     assert config.telegram_webhook_path == "/telegram/webhook"
     assert config.telegram_webhook_secret_token == ""
+    assert config.telegram_admin_user_ids == []
+    assert config.telegram_operator_user_ids == []
     assert config.dashboard_enabled is False
     assert config.audit_retention_days == 30
+    assert config.multi_user_enabled is True
+    assert config.multi_user_bootstrap_first_user is True
 
 
 def test_has_provider_flags():

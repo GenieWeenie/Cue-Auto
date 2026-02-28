@@ -60,6 +60,7 @@ def main() -> None:
     parser.add_argument("--audit-risk", default="", help="Filter audit risk level")
     parser.add_argument("--audit-outcome", default="", help="Filter audit outcome")
     parser.add_argument("--audit-approval", default="", help="Filter audit approval state")
+    parser.add_argument("--audit-user", default="", help="Filter audit user ID")
     parser.add_argument("--audit-start", default="", help="Audit start time/date (ISO or YYYY-MM-DD)")
     parser.add_argument("--audit-end", default="", help="Audit end time/date (ISO or YYYY-MM-DD)")
     args = parser.parse_args()
@@ -90,6 +91,7 @@ def main() -> None:
             risk=args.audit_risk or None,
             outcome=args.audit_outcome or None,
             approval=args.audit_approval or None,
+            user_id=args.audit_user or None,
             limit=max(1, args.audit_limit),
         )
         rows = trail.query(query)

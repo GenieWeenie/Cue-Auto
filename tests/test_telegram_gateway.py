@@ -147,13 +147,14 @@ async def test_gateway_message_sets_correlation(monkeypatch):
 @pytest.mark.asyncio
 async def test_gateway_callback_routes_to_on_approval(monkeypatch):
     monkeypatch.setattr("cue_agent.comms.telegram_gateway.Application", _FakeApplication)
-    seen: list[tuple[str, bool]] = []
+    seen: list[tuple[str, bool, str]] = []
 
     async def _on_message(msg: UnifiedMessage) -> UnifiedResponse:  # noqa: ARG001
         return UnifiedResponse(text="ok", chat_id="1")
 
-    async def _on_approval(approval_id: str, approved: bool):
-        seen.append((approval_id, approved))
+    async def _on_approval(approval_id: str, approved: bool, actor: UnifiedMessage):
+        seen.append((approval_id, approved, actor.user_id))
+        return True
 
     gateway = TelegramGateway(CueConfig(telegram_bot_token="token"), _on_message, _on_approval)
 
@@ -169,13 +170,49 @@ async def test_gateway_callback_routes_to_on_approval(monkeypatch):
         callback_query=SimpleNamespace(
             answer=_answer,
             data="approve:approval_1",
+            from_user=SimpleNamespace(id=77, username="approver", first_name="Approver"),
+            message=SimpleNamespace(chat_id=1, message_id=1, text="approval"),
             edit_message_text=_edit_message_text,
         )
     )
 
     await gateway._handle_callback(update, None)
-    assert seen == [("approval_1", True)]
+    assert seen == [("approval_1", True, "77")]
     assert edited["text"].startswith("Approved:")
+
+
+@pytest.mark.asyncio
+async def test_gateway_callback_shows_not_authorized(monkeypatch):
+    monkeypatch.setattr("cue_agent.comms.telegram_gateway.Application", _FakeApplication)
+
+    async def _on_message(msg: UnifiedMessage) -> UnifiedResponse:  # noqa: ARG001
+        return UnifiedResponse(text="ok", chat_id="1")
+
+    async def _on_approval(approval_id: str, approved: bool, actor: UnifiedMessage):  # noqa: ARG001
+        return False
+
+    gateway = TelegramGateway(CueConfig(telegram_bot_token="token"), _on_message, _on_approval)
+
+    async def _answer(*args, **kwargs):  # noqa: ARG001
+        return None
+
+    edited = {"text": ""}
+
+    async def _edit_message_text(text: str, **kwargs):  # noqa: ARG001
+        edited["text"] = text
+
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            answer=_answer,
+            data="approve:approval_2",
+            from_user=SimpleNamespace(id=88, username="viewer", first_name="Viewer"),
+            message=SimpleNamespace(chat_id=1, message_id=1, text="approval"),
+            edit_message_text=_edit_message_text,
+        )
+    )
+
+    await gateway._handle_callback(update, None)
+    assert edited["text"].startswith("Not authorized:")
 
 
 @pytest.mark.asyncio
