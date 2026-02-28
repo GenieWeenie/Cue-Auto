@@ -38,4 +38,13 @@ Set `CUE_REQUIRE_APPROVAL=false` to disable approval gates (not recommended for 
 - **Webhook** — Use a long, random `CUE_TELEGRAM_WEBHOOK_SECRET_TOKEN` and do not reuse the bot token as the webhook secret.
 - **Backups** — Back up `./data/cue_state.db` (and optionally `./data/vector_memory` if using vector memory); see [deployment](deployment.md#backup-and-runbook).
 
+## Audit export (compliance)
+
+For compliance or SIEM integration, you can export each audit event to an external system:
+
+- **Webhook** — Set `CUE_AUDIT_EXPORT_TYPE=webhook` and `CUE_AUDIT_EXPORT_WEBHOOK_URL` to a URL that accepts POST requests. Each event is sent as JSON. Use for forwarding to a log aggregator or API.
+- **S3** — Set `CUE_AUDIT_EXPORT_TYPE=s3`, `CUE_AUDIT_EXPORT_S3_BUCKET`, and optionally `CUE_AUDIT_EXPORT_S3_PREFIX` (default `audit`). Events are written as one JSON file per event under `prefix/YYYY-MM-DD/{id}.json`. Requires `boto3` (`pip install boto3`) and AWS credentials (env or IAM).
+
+Export runs asynchronously so it does not block the audit trail. Failures are logged but do not affect recording to the local SQLite DB.
+
 For deployment options (Docker, systemd, cloud) and health/dashboard usage, see the [deployment guide](deployment.md).

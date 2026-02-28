@@ -151,6 +151,11 @@ class CueConfig(BaseSettings):
     # --- Audit Trail ---
     audit_retention_days: int = 30
     audit_cleanup_cron: str = "15 3 * * *"
+    # Optional export: "none" | "webhook" | "s3"
+    audit_export_type: str = "none"
+    audit_export_webhook_url: str = ""
+    audit_export_s3_bucket: str = ""
+    audit_export_s3_prefix: str = "audit"
 
     @property
     def has_openai(self) -> bool:

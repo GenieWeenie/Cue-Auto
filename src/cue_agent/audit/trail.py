@@ -10,7 +10,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass(frozen=True)
@@ -31,8 +31,14 @@ class AuditQuery:
 class AuditTrail:
     """Structured audit storage with query, cleanup, and export helpers."""
 
-    def __init__(self, db_path: str):
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        on_record: Callable[[dict[str, Any]], None] | None = None,
+    ):
         self._lock = threading.Lock()
+        self._on_record = on_record
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -85,7 +91,26 @@ class AuditTrail:
             self._conn.commit()
             if cursor.lastrowid is None:
                 raise RuntimeError("Failed to insert audit row")
-            return int(cursor.lastrowid)
+            row_id = int(cursor.lastrowid)
+        event_dict = {
+            "id": row_id,
+            "timestamp_utc": ts,
+            "correlation_id": correlation_id.strip() or "-",
+            "event_type": event_type.strip()[:64],
+            "action": action.strip()[:128],
+            "risk_level": risk_level.strip()[:32],
+            "approval_state": approval_state.strip()[:32],
+            "outcome": outcome.strip()[:32],
+            "chat_id": chat_id.strip()[:64],
+            "user_id": user_id.strip()[:64],
+            "run_id": run_id.strip()[:64],
+            "duration_ms": max(0, int(duration_ms)),
+            "details": details or {},
+        }
+        if self._on_record is not None:
+            t = threading.Thread(target=self._on_record, args=(event_dict,), daemon=True)
+            t.start()
+        return row_id
 
     def query(self, query: AuditQuery) -> list[dict[str, Any]]:
         conditions: list[str] = []
