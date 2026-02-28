@@ -129,3 +129,255 @@ def test_config_diagnostics_fails_without_any_provider(tmp_path: Path):
     report = run_config_diagnostics(config, fetcher=fetcher)
     assert report.exit_code == 1
     assert any("No LLM provider configured" in err for err in report.errors)
+
+
+def test_config_diagnostics_provider_not_configured(tmp_path: Path):
+    """Providers without API key show status 'not configured'."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("identity", encoding="utf-8")
+
+    config = CueConfig(
+        openai_api_key="",
+        anthropic_api_key="",
+        openrouter_api_key="",
+        lmstudio_base_url="",
+        telegram_bot_token="bot-token",
+        telegram_admin_chat_id=12345,
+        skills_dir=str(skills_dir),
+        soul_md_path=str(soul_path),
+    )
+    fetcher = _fetcher_factory({("GET", "https://api.telegram.org/botbot-token/getMe"): (200, "{}")})
+
+    report = run_config_diagnostics(config, fetcher=fetcher)
+    not_configured = [p for p in report.providers if p.status == "not configured"]
+    assert len(not_configured) >= 3
+    assert all(not p.configured for p in not_configured)
+    assert any("missing API key" in p.detail for p in not_configured)
+
+
+def test_config_diagnostics_provider_fetcher_raises(tmp_path: Path):
+    """When fetcher raises, provider status is 'unreachable'."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("identity", encoding="utf-8")
+
+    def _fetcher_fail(_method: str, url: str, *_args, **_kwargs):
+        if "openai.com" in url:
+            raise OSError("Connection refused")
+        return (200, "{}")
+
+    config = CueConfig(
+        openai_api_key="sk-x",
+        openai_base_url="https://api.openai.com",
+        lmstudio_base_url="",
+        telegram_bot_token="bot-token",
+        telegram_admin_chat_id=12345,
+        skills_dir=str(skills_dir),
+        soul_md_path=str(soul_path),
+    )
+
+    report = run_config_diagnostics(config, fetcher=_fetcher_fail)
+    openai_check = next(p for p in report.providers if p.provider == "openai")
+    assert openai_check.status == "unreachable"
+    assert "Connection refused" in openai_check.detail
+    assert openai_check.latency_ms is not None
+
+
+def test_config_diagnostics_provider_http_non_2xx(tmp_path: Path):
+    """Provider returning non-2xx gets status 'unreachable'."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("identity", encoding="utf-8")
+
+    config = CueConfig(
+        openai_api_key="sk-x",
+        openai_base_url="https://api.openai.com",
+        lmstudio_base_url="",
+        telegram_bot_token="bot-token",
+        telegram_admin_chat_id=12345,
+        skills_dir=str(skills_dir),
+        soul_md_path=str(soul_path),
+    )
+    fetcher = _fetcher_factory(
+        {
+            ("GET", "https://api.openai.com/v1/models"): (503, "Service Unavailable"),
+            ("GET", "https://api.telegram.org/botbot-token/getMe"): (200, "{}"),
+        }
+    )
+
+    report = run_config_diagnostics(config, fetcher=fetcher)
+    openai_check = next(p for p in report.providers if p.provider == "openai")
+    assert openai_check.status == "unreachable"
+    assert "503" in openai_check.detail
+
+
+def test_config_diagnostics_telegram_getme_non_200(tmp_path: Path):
+    """Telegram getMe non-200 yields invalid status and error."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("identity", encoding="utf-8")
+
+    config = CueConfig(
+        openai_api_key="sk-x",
+        openai_base_url="https://api.openai.com",
+        lmstudio_base_url="",
+        telegram_bot_token="bad-token",
+        telegram_admin_chat_id=12345,
+        skills_dir=str(skills_dir),
+        soul_md_path=str(soul_path),
+    )
+    fetcher = _fetcher_factory(
+        {
+            ("GET", "https://api.openai.com/v1/models"): (200, "{}"),
+            ("GET", "https://api.telegram.org/botbad-token/getMe"): (401, "Unauthorized"),
+        }
+    )
+
+    report = run_config_diagnostics(config, fetcher=fetcher)
+    assert report.telegram_status == "invalid"
+    assert any("Telegram" in err for err in report.errors)
+
+
+def test_config_diagnostics_telegram_getme_raises(tmp_path: Path):
+    """Telegram getMe exception yields unreachable and warning."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("identity", encoding="utf-8")
+
+    def _fetcher(method: str, url: str, *_args, **_kwargs):
+        if "telegram" in url.lower():
+            raise TimeoutError("timed out")
+        return (200, "{}")
+
+    config = CueConfig(
+        openai_api_key="sk-x",
+        openai_base_url="https://api.openai.com",
+        lmstudio_base_url="",
+        telegram_bot_token="bot-token",
+        telegram_admin_chat_id=12345,
+        skills_dir=str(skills_dir),
+        soul_md_path=str(soul_path),
+    )
+
+    report = run_config_diagnostics(config, fetcher=_fetcher)
+    assert report.telegram_status == "unreachable"
+    assert any("timed out" in w for w in report.warnings)
+
+
+def test_config_diagnostics_skills_dir_missing(tmp_path: Path):
+    """Missing skills directory produces invalid status and error."""
+    missing_skills = tmp_path / "nonexistent_skills"
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("identity", encoding="utf-8")
+
+    config = CueConfig(
+        openai_api_key="sk-x",
+        openai_base_url="https://api.openai.com",
+        lmstudio_base_url="",
+        telegram_bot_token="bot-token",
+        telegram_admin_chat_id=12345,
+        skills_dir=str(missing_skills),
+        soul_md_path=str(soul_path),
+    )
+    fetcher = _fetcher_factory(
+        {
+            ("GET", "https://api.openai.com/v1/models"): (200, "{}"),
+            ("GET", "https://api.telegram.org/botbot-token/getMe"): (200, "{}"),
+        }
+    )
+
+    report = run_config_diagnostics(config, fetcher=fetcher)
+    assert report.skills_status == "invalid"
+    assert "directory does not exist" in report.skills_detail
+    assert any("Skills directory missing" in err for err in report.errors)
+
+
+def test_config_diagnostics_skills_dir_not_a_directory(tmp_path: Path):
+    """Skills path that is a file (not a dir) produces invalid status."""
+    file_as_skills = tmp_path / "skills_file"
+    file_as_skills.write_text("not a dir", encoding="utf-8")
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("identity", encoding="utf-8")
+
+    config = CueConfig(
+        openai_api_key="sk-x",
+        openai_base_url="https://api.openai.com",
+        lmstudio_base_url="",
+        telegram_bot_token="bot-token",
+        telegram_admin_chat_id=12345,
+        skills_dir=str(file_as_skills),
+        soul_md_path=str(soul_path),
+    )
+    fetcher = _fetcher_factory(
+        {
+            ("GET", "https://api.openai.com/v1/models"): (200, "{}"),
+            ("GET", "https://api.telegram.org/botbot-token/getMe"): (200, "{}"),
+        }
+    )
+
+    report = run_config_diagnostics(config, fetcher=fetcher)
+    assert report.skills_status == "invalid"
+    assert "not a directory" in report.skills_detail
+
+
+def test_config_diagnostics_soul_not_a_file(tmp_path: Path):
+    """SOUL path that is a directory yields warning."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    soul_as_dir = tmp_path / "SOUL_dir"
+    soul_as_dir.mkdir()
+
+    config = CueConfig(
+        openai_api_key="sk-x",
+        openai_base_url="https://api.openai.com",
+        lmstudio_base_url="",
+        telegram_bot_token="bot-token",
+        telegram_admin_chat_id=12345,
+        skills_dir=str(skills_dir),
+        soul_md_path=str(soul_as_dir),
+    )
+    fetcher = _fetcher_factory(
+        {
+            ("GET", "https://api.openai.com/v1/models"): (200, "{}"),
+            ("GET", "https://api.telegram.org/botbot-token/getMe"): (200, "{}"),
+        }
+    )
+
+    report = run_config_diagnostics(config, fetcher=fetcher)
+    assert report.soul_status == "warning"
+    assert "not a file" in report.soul_detail
+    assert any("SOUL path" in w for w in report.warnings)
+
+
+def test_config_diagnostics_warning_when_no_reachable_providers(tmp_path: Path):
+    """When all configured providers return non-2xx, warning is added."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("identity", encoding="utf-8")
+
+    config = CueConfig(
+        openai_api_key="sk-x",
+        openai_base_url="https://api.openai.com",
+        lmstudio_base_url="",
+        telegram_bot_token="bot-token",
+        telegram_admin_chat_id=12345,
+        skills_dir=str(skills_dir),
+        soul_md_path=str(soul_path),
+    )
+    fetcher = _fetcher_factory(
+        {
+            ("GET", "https://api.openai.com/v1/models"): (503, "down"),
+            ("GET", "https://api.telegram.org/botbot-token/getMe"): (200, "{}"),
+        }
+    )
+
+    report = run_config_diagnostics(config, fetcher=fetcher)
+    assert report.exit_code == 0
+    assert any("No configured LLM providers are currently reachable" in w for w in report.warnings)
