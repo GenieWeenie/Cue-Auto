@@ -1,0 +1,25 @@
+name: research-and-summarize
+description: Parallel research branches and merged summary draft.
+trigger:
+  manual: true
+  schedules: []
+  events: []
+steps:
+  - id: branch_research
+    type: parallel
+    branches:
+      - id: sources
+        steps:
+          - id: gather_sources
+            type: llm
+            prompt: "List key sources for topic: {{input.text}}"
+      - id: risks
+        steps:
+          - id: gather_risks
+            type: llm
+            prompt: "List known risks and caveats for topic: {{input.text}}"
+  - id: build_summary
+    type: llm
+    prompt: |
+      Build a concise summary for topic {{input.text}}.
+      Include source guidance: {{branch_research.output.branches}}

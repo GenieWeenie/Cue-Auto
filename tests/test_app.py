@@ -50,6 +50,11 @@ def _install_fakes(
         heartbeat_crons=[],
         watcher_start=0,
         watcher_stop=0,
+        workflow_watcher_start=0,
+        workflow_watcher_stop=0,
+        workflow_reload_count=0,
+        workflow_events=[],
+        workflow_runs=[],
         loop_run_forever=0,
         loop_run_once=0,
         loop_stop=0,
@@ -106,6 +111,9 @@ def _install_fakes(
             self.multi_agent_max_concurrent = 3
             self.multi_agent_subagent_timeout_seconds = 120
             self.multi_agent_default_provider_preference = "auto"
+            self.workflows_enabled = True
+            self.workflows_dir = "workflows"
+            self.workflows_hot_reload = True
             self.healthcheck_enabled = False
             self.healthcheck_host = "127.0.0.1"
             self.healthcheck_port = 0
@@ -484,6 +492,78 @@ def _install_fakes(
         def validate_registry_index(self):
             return {"ok": True, "errors": [], "warnings": [], "skill_count": 1}
 
+    class FakeWorkflowLoader:
+        def __init__(self, workflows_dir):  # noqa: ARG002
+            pass
+
+    class FakeWorkflowEngine:
+        def __init__(self, **kwargs):  # noqa: ARG002
+            pass
+
+    class FakeWorkflowManager:
+        def __init__(self, loader, engine):  # noqa: ARG002
+            self._workflows = {
+                "demo": SimpleNamespace(
+                    name="demo",
+                    description="demo workflow",
+                    source_path="workflows/demo.yaml",
+                    trigger=SimpleNamespace(manual=True, schedules=(), events=()),
+                    steps=[{"id": "s1", "type": "llm"}],
+                )
+            }
+
+        def reload_all(self):
+            t.workflow_reload_count += 1
+            return list(self._workflows.keys())
+
+        def refresh_if_needed(self):
+            return False
+
+        @property
+        def workflow_names(self):
+            return list(self._workflows.keys())
+
+        def workflow(self, name: str):
+            return self._workflows.get(name)
+
+        def list_templates(self):
+            return ["daily-standup-report"]
+
+        def template_path(self, template_name: str):  # noqa: ARG002
+            return Path("workflows/templates/daily-standup-report.yaml")
+
+        def event_workflows(self, event_name: str):  # noqa: ARG002
+            return []
+
+        def scheduled_triggers(self):
+            return []
+
+        async def run_workflow(self, name: str, **kwargs):  # noqa: ANN003
+            t.workflow_runs.append((name, kwargs))
+            return SimpleNamespace(
+                workflow_name=name,
+                trigger=str(kwargs.get("trigger", "manual")),
+                status="success",
+                duration_ms=10,
+                step_results=[SimpleNamespace(status="success")],
+                to_dict=lambda: {"workflow_name": name, "status": "success", "duration_ms": 10, "step_results": []},
+            )
+
+        def fire_event(self, event_name: str, **kwargs):  # noqa: ANN003
+            t.workflow_events.append((event_name, kwargs))
+            return []
+
+    class FakeWorkflowWatcher:
+        def __init__(self, workflows_dir, on_reload):  # noqa: ARG002
+            self.on_reload = on_reload
+
+        async def start(self):
+            t.workflow_watcher_start += 1
+            await asyncio.sleep(0)
+
+        def stop(self):
+            t.workflow_watcher_stop += 1
+
     class FakeRalphLoop:
         def __init__(self, **kwargs):  # noqa: ARG002
             self.is_running = False
@@ -523,6 +603,10 @@ def _install_fakes(
     monkeypatch.setattr(app_module, "SkillLoader", FakeSkillLoader)
     monkeypatch.setattr(app_module, "SkillWatcher", FakeSkillWatcher)
     monkeypatch.setattr(app_module, "SkillMarketplace", FakeMarketplace)
+    monkeypatch.setattr(app_module, "WorkflowLoader", FakeWorkflowLoader)
+    monkeypatch.setattr(app_module, "WorkflowEngine", FakeWorkflowEngine)
+    monkeypatch.setattr(app_module, "WorkflowManager", FakeWorkflowManager)
+    monkeypatch.setattr(app_module, "WorkflowWatcher", FakeWorkflowWatcher)
     monkeypatch.setattr(app_module, "RalphLoop", FakeRalphLoop)
 
     return t
@@ -552,6 +636,7 @@ async def test_app_init_without_telegram_and_handle_message(monkeypatch):
     assert health["memory"] == {"vector_enabled": False, "vector_available": False}
     assert health["notifications"]["enabled"] is True
     assert health["agents"]["enabled"] is True
+    assert health["workflows"]["enabled"] is True
 
 
 def test_app_dashboard_snapshot_and_timeline(monkeypatch):
@@ -678,6 +763,17 @@ async def test_app_task_commands(monkeypatch):
     )
     market_search_response = await app._handle_message(market_search_msg)
     assert "Marketplace Skills" in market_search_response.text
+
+    workflow_list_msg = UnifiedMessage(platform="telegram", chat_id="chat-1", user_id="u1", text="/workflow list")
+    workflow_list_response = await app._handle_message(workflow_list_msg)
+    assert "Workflows" in workflow_list_response.text
+
+    workflow_run_msg = UnifiedMessage(
+        platform="telegram", chat_id="chat-1", user_id="u1", text="/workflow run demo test-input"
+    )
+    workflow_run_response = await app._handle_message(workflow_run_msg)
+    assert "Workflow Run" in workflow_run_response.text
+    assert t.workflow_runs[-1][0] == "demo"
 
 
 @pytest.mark.asyncio

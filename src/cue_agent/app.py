@@ -41,6 +41,7 @@ from cue_agent.security.user_access import UserAccessStore, has_permission, is_a
 from cue_agent.skills.loader import SkillLoader
 from cue_agent.skills.marketplace import SkillMarketplace
 from cue_agent.skills.watcher import SkillWatcher
+from cue_agent.workflows import WorkflowEngine, WorkflowLoader, WorkflowManager, WorkflowWatcher
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,23 @@ class CueApp:
                 risk_event_handler=self._handle_risk_event,
             )
 
+        # --- Workflows ---
+        self.workflow_loader = WorkflowLoader(self.config.workflows_dir)
+        self.workflow_engine = WorkflowEngine(
+            brain=self.brain,
+            actions=self.actions,
+            risk_classifier=self.risk_classifier,
+            approval_gateway=self.approval_gateway,
+            notification_handler=self._emit_workflow_notification,
+            retry_base_delay_seconds=self.config.retry_base_delay_seconds,
+            retry_max_delay_seconds=self.config.retry_max_delay_seconds,
+            retry_jitter_seconds=self.config.retry_jitter_seconds,
+            audit_handler=self._handle_workflow_step_audit,
+        )
+        self.workflow_manager = WorkflowManager(self.workflow_loader, self.workflow_engine)
+        self.workflow_watcher = WorkflowWatcher(self.config.workflows_dir, on_reload=self._handle_workflow_reload)
+        self._workflow_tasks: set[asyncio.Task[Any]] = set()
+
         # --- Skills ---
         self.skill_loader = SkillLoader(self.config.skills_dir)
         self.marketplace = SkillMarketplace(
@@ -191,6 +209,98 @@ class CueApp:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
+    def _emit_workflow_notification(self, event: dict[str, Any]) -> None:
+        category = str(event.get("category", "workflow"))
+        priority = str(event.get("priority", "medium"))
+        title = str(event.get("title", "Workflow Notification"))
+        body = str(event.get("body", ""))
+        metadata = event.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        self._notify_event(
+            category=category,
+            priority=priority,
+            title=title,
+            body=body,
+            metadata=metadata,
+        )
+
+    def _handle_workflow_step_audit(self, event: dict[str, Any]) -> None:
+        workflow_name = str(event.get("workflow_name", "workflow"))
+        step_id = str(event.get("step_id", "step"))
+        status = str(event.get("status", "unknown"))
+        step_type = str(event.get("step_type", "unknown"))
+        duration_ms = int(event.get("duration_ms", 0) or 0)
+        error = str(event.get("error", ""))
+        output = event.get("output", {})
+        if not isinstance(output, dict):
+            output = {"value": str(output)}
+        self._append_timeline_event(
+            {
+                "event_type": "workflow",
+                "tool_name": f"{workflow_name}:{step_id}",
+                "risk_level": "high" if status != "success" else "low",
+                "duration_ms": duration_ms,
+                "outcome": status,
+                "summary": f"{step_type} {step_id} {status}"[:240],
+                "arguments": output,
+            }
+        )
+        self._record_audit_event(
+            event_type="workflow_step",
+            action=f"{workflow_name}:{step_id}",
+            risk_level="high" if status != "success" else "low",
+            outcome=status,
+            duration_ms=duration_ms,
+            details={
+                "workflow_name": workflow_name,
+                "step_id": step_id,
+                "step_type": step_type,
+                "error": error[:240],
+                "output": output,
+                "source_path": str(event.get("source_path", "")),
+            },
+        )
+
+    async def _handle_workflow_reload(self) -> None:
+        names = self.workflow_manager.reload_all()
+        logger.info(
+            "Workflow definitions reloaded",
+            extra={"event": "workflows_reloaded", "workflow_count": len(names), "workflows": names},
+        )
+
+    def _track_workflow_task(self, task: asyncio.Task[Any]) -> None:
+        self._workflow_tasks.add(task)
+        task.add_done_callback(self._workflow_tasks.discard)
+        task.add_done_callback(self._log_workflow_task_result)
+
+    @staticmethod
+    def _log_workflow_task_result(task: asyncio.Task[Any]) -> None:
+        if task.cancelled():
+            return
+        try:
+            _ = task.result()
+        except Exception:
+            logger.exception("Workflow task failed", extra={"event": "workflow_task_error"})
+
+    def _trigger_workflows_for_event(self, event_name: str, payload: dict[str, Any] | None = None) -> None:
+        if not getattr(self.config, "workflows_enabled", True):
+            return
+        try:
+            tasks = self.workflow_manager.fire_event(
+                event_name,
+                payload=payload,
+                actor_user_id="system",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to dispatch workflow event trigger",
+                extra={"event": "workflow_event_dispatch_error", "event_name": event_name},
+            )
+            return
+        for task in tasks:
+            self._track_workflow_task(task)
 
     def _bootstrap_access_roles(self) -> None:
         admin_ids: list[str] = []
@@ -267,6 +377,8 @@ class CueApp:
         if command == "/market":
             sub = parts[1].lower() if len(parts) > 1 else ""
             return "skills.marketplace.view" if sub in {"", "help", "search"} else "skills.marketplace.manage"
+        if command == "/workflow":
+            return "tasks.manage"
         return None
 
     def _deny_access(self, *, msg: UnifiedMessage, role: str, command: str, permission: str) -> UnifiedResponse:
@@ -322,7 +434,7 @@ class CueApp:
             },
         )
 
-        command_response = self._handle_commands(msg, role)
+        command_response = await self._handle_commands(msg, role)
         if command_response is not None:
             return command_response
 
@@ -409,7 +521,7 @@ class CueApp:
         )
         return UnifiedResponse(text=response_text, chat_id=msg.chat_id)
 
-    def _handle_commands(self, msg: UnifiedMessage, role: str) -> UnifiedResponse | None:
+    async def _handle_commands(self, msg: UnifiedMessage, role: str) -> UnifiedResponse | None:
         text = msg.text.strip()
         if not text.startswith("/"):
             return None
@@ -447,6 +559,9 @@ class CueApp:
 
             if command == "/market":
                 return self._handle_market_command(msg, parts[1:])
+
+            if command == "/workflow":
+                return await self._handle_workflow_command(msg, parts[1:])
 
             if command == "/tasks":
                 mode = parts[1].lower() if len(parts) > 1 else ""
@@ -913,6 +1028,116 @@ class CueApp:
 
         return UnifiedResponse(text=self._market_help_text(), chat_id=msg.chat_id)
 
+    async def _handle_workflow_command(self, msg: UnifiedMessage, args: list[str]) -> UnifiedResponse:
+        if not getattr(self.config, "workflows_enabled", True):
+            return UnifiedResponse(text="Workflow engine is disabled.", chat_id=msg.chat_id)
+        if not args or args[0].lower() in {"help", "?"}:
+            return UnifiedResponse(text=self._workflow_help_text(), chat_id=msg.chat_id)
+
+        sub = args[0].lower()
+        if sub == "list":
+            self.workflow_manager.refresh_if_needed()
+            names = self.workflow_manager.workflow_names
+            templates = self.workflow_manager.list_templates()
+            lines = ["*Workflows*"]
+            if names:
+                lines.append(f"- Loaded: `{len(names)}`")
+                for name in names:
+                    workflow = self.workflow_manager.workflow(name)
+                    if workflow is None:
+                        continue
+                    schedule_count = len(workflow.trigger.schedules)
+                    event_count = len(workflow.trigger.events)
+                    manual = workflow.trigger.manual
+                    lines.append(f"- `{name}` manual={manual} schedules={schedule_count} events={event_count}")
+            else:
+                lines.append("- No workflows loaded.")
+            if templates:
+                lines.append(f"- Templates: `{', '.join(templates)}`")
+            return UnifiedResponse(text="\n".join(lines), chat_id=msg.chat_id, ui_mode="tasks")
+
+        if sub == "run":
+            if len(args) < 2:
+                return UnifiedResponse(text="Usage: /workflow run <name> [input...]", chat_id=msg.chat_id)
+            workflow_name = args[1]
+            input_text = " ".join(args[2:]).strip()
+            try:
+                run = await self.workflow_manager.run_workflow(
+                    workflow_name,
+                    trigger="manual",
+                    input_text=input_text,
+                    actor_user_id=msg.user_id,
+                )
+            except Exception as exc:
+                self._record_audit_event(
+                    event_type="workflow_run",
+                    action=workflow_name,
+                    risk_level="high",
+                    outcome="error",
+                    chat_id=msg.chat_id,
+                    user_id=msg.user_id,
+                    details={"error": str(exc)},
+                )
+                return UnifiedResponse(text=f"Workflow run error: {exc}", chat_id=msg.chat_id)
+
+            self._record_audit_event(
+                event_type="workflow_run",
+                action=workflow_name,
+                risk_level="low" if run.status == "success" else "high",
+                outcome=run.status,
+                chat_id=msg.chat_id,
+                user_id=msg.user_id,
+                duration_ms=run.duration_ms,
+                details=run.to_dict(),
+            )
+            succeeded = sum(1 for row in run.step_results if row.status == "success")
+            failed = sum(1 for row in run.step_results if row.status != "success")
+            return UnifiedResponse(
+                text=(
+                    f"*Workflow Run*\n"
+                    f"- Name: `{run.workflow_name}`\n"
+                    f"- Trigger: `{run.trigger}`\n"
+                    f"- Status: `{run.status}`\n"
+                    f"- Duration: `{run.duration_ms}ms`\n"
+                    f"- Steps: total=`{len(run.step_results)}` success=`{succeeded}` failed=`{failed}`"
+                ),
+                chat_id=msg.chat_id,
+            )
+
+        if sub == "show":
+            if len(args) != 2:
+                return UnifiedResponse(text="Usage: /workflow show <name>", chat_id=msg.chat_id)
+            workflow = self.workflow_manager.workflow(args[1])
+            if workflow is None:
+                return UnifiedResponse(text=f"Workflow not found: `{args[1]}`", chat_id=msg.chat_id)
+            lines = [
+                f"*Workflow `{workflow.name}`*",
+                f"- Description: {workflow.description or 'n/a'}",
+                f"- Source: `{workflow.source_path}`",
+                f"- Manual trigger: `{workflow.trigger.manual}`",
+                f"- Schedule triggers: `{list(workflow.trigger.schedules)}`",
+                f"- Event triggers: `{list(workflow.trigger.events)}`",
+                f"- Steps: `{len(workflow.steps)}`",
+            ]
+            for step in workflow.steps[:10]:
+                lines.append(f"  - `{step.get('id', 'step')}` type=`{step.get('type', 'unknown')}`")
+            if len(workflow.steps) > 10:
+                lines.append(f"  - ... and {len(workflow.steps) - 10} more")
+            return UnifiedResponse(text="\n".join(lines), chat_id=msg.chat_id)
+
+        if sub == "template":
+            if len(args) != 2:
+                return UnifiedResponse(text="Usage: /workflow template <name>", chat_id=msg.chat_id)
+            template_path = self.workflow_manager.template_path(args[1])
+            if template_path is None:
+                return UnifiedResponse(text=f"Template not found: `{args[1]}`", chat_id=msg.chat_id)
+            return UnifiedResponse(
+                text=f"Template path: `{template_path}`",
+                chat_id=msg.chat_id,
+            )
+
+        return UnifiedResponse(text=self._workflow_help_text(), chat_id=msg.chat_id)
+
     def _reload_marketplace_skill(self, path: Path) -> None:
         try:
             skill = self.skill_loader.reload_skill(path)
@@ -933,6 +1158,7 @@ class CueApp:
             "[start=YYYY-MM-DD] [end=YYYY-MM-DD]\n"
             "- /users me | /users list | /users role <user_id> <role> | /users remove <user_id>\n"
             "- /market search <query> | /market install <skill_id> [version] | /market update [skill_id|all]\n"
+            "- /workflow list | /workflow run <name> [input] | /workflow show <name>\n"
             "- /tasks [status|all]\n"
             "- /tasks download\n"
             "- /task add [p1|p2|p3|p4] <title>\n"
@@ -956,6 +1182,7 @@ class CueApp:
             "- `/approve` Pending approval requests\n"
             "- `/users ...` User access and role management\n"
             "- `/market ...` Community skill marketplace commands\n"
+            "- `/workflow ...` Custom workflow list/run/show commands\n"
             "- `/settings` Runtime settings snapshot"
         )
 
@@ -986,6 +1213,16 @@ class CueApp:
             "- /market update [skill_id|all]\n"
             "- /market validate-registry\n"
             "- /market validate <path>"
+        )
+
+    @staticmethod
+    def _workflow_help_text() -> str:
+        return (
+            "Workflow commands:\n"
+            "- /workflow list\n"
+            "- /workflow run <name> [input text]\n"
+            "- /workflow show <name>\n"
+            "- /workflow template <name>"
         )
 
     def _agents_text(self) -> str:
@@ -1035,6 +1272,7 @@ class CueApp:
         telegram = status.get("telegram", {})
         access = status.get("access", {})
         agents = status.get("agents", {})
+        workflows = status.get("workflows", {})
 
         provider_line = ", ".join(f"{k}:{v}" for k, v in providers.items()) if isinstance(providers, dict) else "n/a"
         queue_stats = queue.get("task_queue", {}) if isinstance(queue, dict) else {}
@@ -1088,6 +1326,14 @@ class CueApp:
                     formatted.append(f"{parent_id}:{parent_status}/running={running_count}")
                 if formatted:
                     agent_tree_line = ", ".join(formatted)
+        workflow_line = "n/a"
+        if isinstance(workflows, dict):
+            workflow_line = (
+                f"enabled={workflows.get('enabled', False)} "
+                f"loaded={workflows.get('loaded', 0)} "
+                f"templates={workflows.get('templates', 0)} "
+                f"running={workflows.get('running_tasks', 0)}"
+            )
         return (
             "*CueAgent Status*\n"
             f"- Time (UTC): `{status.get('timestamp_utc', 'n/a')}`\n"
@@ -1095,6 +1341,7 @@ class CueApp:
             f"- Providers: {provider_line}\n"
             f"- Multi-agent: `{agent_line}`\n"
             f"- Agent tree: `{agent_tree_line}`\n"
+            f"- Workflows: `{workflow_line}`\n"
             f"- Telegram webhook: `{webhook_line}`\n"
             f"- Access: `{users_line}`\n"
             f"- Queue: {queue_line}\n"
@@ -1124,6 +1371,9 @@ class CueApp:
             f"- Multi-agent: `{getattr(self.config, 'multi_agent_enabled', True)}` "
             f"max_concurrent=`{getattr(self.config, 'multi_agent_max_concurrent', 3)}` "
             f"timeout=`{getattr(self.config, 'multi_agent_subagent_timeout_seconds', 120)}s`\n"
+            f"- Workflows: `{getattr(self.config, 'workflows_enabled', True)}` "
+            f"dir=`{getattr(self.config, 'workflows_dir', 'workflows')}` "
+            f"hot_reload=`{getattr(self.config, 'workflows_hot_reload', True)}`\n"
             f"- Approval required: `{self.config.require_approval}` levels=`{self.config.approval_required_levels}`\n"
             f"- Notifications: `enabled={self.config.notifications_enabled}` "
             f"`mode={self.config.notification_delivery_mode}`\n"
@@ -1209,6 +1459,14 @@ class CueApp:
             details={
                 "summary": summary[:240],
                 "arguments": arguments if isinstance(arguments, dict) else {},
+            },
+        )
+        self._trigger_workflows_for_event(
+            "tool.execution",
+            payload={
+                "tool_name": tool_name,
+                "outcome": str(event.get("outcome", "unknown")),
+                "risk_level": risk_level,
             },
         )
 
@@ -1366,6 +1624,10 @@ class CueApp:
             body=body,
             metadata=event,
         )
+        self._trigger_workflows_for_event(
+            f"loop.{category}",
+            payload={"category": category, "priority": priority, "title": title, "body": body},
+        )
 
     async def _notify_provider_outage(self, provider_status: dict[str, str]) -> None:
         if self.telegram is None:
@@ -1437,6 +1699,10 @@ class CueApp:
                 logger.info("Hot-reloaded skill: %s (%d tools)", skill.name, len(skill.tools))
             except Exception:
                 logger.exception("Failed to hot-reload skill from %s", path)
+        self._trigger_workflows_for_event(
+            "file.change",
+            payload={"path": str(path), "event_type": event_type},
+        )
 
     async def start(self, mode: str = "polling") -> None:
         """Start CueAgent in the specified mode."""
@@ -1516,11 +1782,21 @@ class CueApp:
                 ),
                 self.config.audit_cleanup_cron,
             )
+        if self.config.heartbeat_enabled and getattr(self.config, "workflows_enabled", True):
+            for scheduled in self.workflow_manager.scheduled_triggers():
+                await self.heartbeat.add_cron_task(
+                    scheduled.trigger_id,
+                    partial(self._run_scheduled_workflow, scheduled.workflow_name, scheduled.cron),
+                    scheduled.cron,
+                )
 
         # Start skill watcher for hot-reload
         watcher_task = None
         if self.config.skills_hot_reload:
             watcher_task = asyncio.create_task(self.skill_watcher.start())
+        workflow_watcher_task = None
+        if getattr(self.config, "workflows_enabled", True) and getattr(self.config, "workflows_hot_reload", True):
+            workflow_watcher_task = asyncio.create_task(self.workflow_watcher.start())
 
         try:
             if mode == "polling":
@@ -1539,7 +1815,33 @@ class CueApp:
             if watcher_task:
                 self.skill_watcher.stop()
                 watcher_task.cancel()
+            if workflow_watcher_task:
+                self.workflow_watcher.stop()
+                workflow_watcher_task.cancel()
             await self._shutdown()
+
+    async def _run_scheduled_workflow(self, workflow_name: str, cron_expr: str) -> None:
+        if not getattr(self.config, "workflows_enabled", True):
+            return
+        try:
+            run = await self.workflow_manager.run_workflow(
+                workflow_name,
+                trigger=f"scheduled:{cron_expr}",
+                actor_user_id="system",
+            )
+            self._record_audit_event(
+                event_type="workflow_run",
+                action=workflow_name,
+                risk_level="low" if run.status == "success" else "high",
+                outcome=run.status,
+                duration_ms=run.duration_ms,
+                details=run.to_dict(),
+            )
+        except Exception:
+            logger.exception(
+                "Scheduled workflow run failed",
+                extra={"event": "workflow_schedule_failed", "workflow_name": workflow_name, "cron": cron_expr},
+            )
 
     async def _run_polling(self) -> None:
         """Run Telegram polling with optional Ralph loop."""
@@ -1606,6 +1908,11 @@ class CueApp:
         """Graceful shutdown."""
         self._is_running = False
         self.ralph_loop.stop()
+        for task in list(self._workflow_tasks):
+            task.cancel()
+        if self._workflow_tasks:
+            await asyncio.gather(*list(self._workflow_tasks), return_exceptions=True)
+        self._workflow_tasks.clear()
         await self.heartbeat.stop()
         if self.notification_manager is not None:
             await self.notification_manager.flush(force=True, batched=True)
@@ -1631,6 +1938,10 @@ class CueApp:
             telegram_diag["webhook"] = self.telegram.webhook_diagnostics()
         multi_user_enabled = getattr(self.config, "multi_user_enabled", True)
         role_counts = self.user_access.role_counts() if multi_user_enabled else {}
+        workflow_names = self.workflow_manager.workflow_names if getattr(self.config, "workflows_enabled", True) else []
+        workflow_templates = (
+            self.workflow_manager.list_templates() if getattr(self.config, "workflows_enabled", True) else []
+        )
         return {
             "status": "ok",
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -1659,6 +1970,14 @@ class CueApp:
                 "vector_available": self.vector_memory.is_available,
             },
             "agents": self.multi_agent_orchestrator.status_snapshot(),
+            "workflows": {
+                "enabled": bool(getattr(self.config, "workflows_enabled", True)),
+                "loaded": len(workflow_names),
+                "templates": len(workflow_templates),
+                "running_tasks": len(self._workflow_tasks),
+                "hot_reload": bool(getattr(self.config, "workflows_hot_reload", True)),
+                "directory": str(getattr(self.config, "workflows_dir", "workflows")),
+            },
             "telegram": telegram_diag,
             "access": {
                 "multi_user_enabled": multi_user_enabled,
@@ -1689,6 +2008,7 @@ class CueApp:
             "provider_metrics": provider_metrics,
             "queue": queue,
             "agents": health.get("agents", {}),
+            "workflows": health.get("workflows", {}),
             "telegram": health.get("telegram", {}),
             "access": health.get("access", {}),
             "tasks": tasks,
@@ -1697,6 +2017,7 @@ class CueApp:
                 "loop_enabled": self.config.loop_enabled,
                 "task_queue_enabled": self.config.task_queue_enabled,
                 "multi_agent_enabled": getattr(self.config, "multi_agent_enabled", True),
+                "workflows_enabled": getattr(self.config, "workflows_enabled", True),
                 "notifications_enabled": self.config.notifications_enabled,
                 "notification_mode": self.config.notification_delivery_mode,
                 "dashboard_enabled": self.config.dashboard_enabled,

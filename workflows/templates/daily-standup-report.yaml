@@ -1,0 +1,19 @@
+name: daily-standup-report
+description: Summarize recent queue activity and send a daily operator update.
+trigger:
+  manual: true
+  schedules:
+    - "0 9 * * 1-5"
+  events: []
+steps:
+  - id: summarize
+    type: llm
+    prompt: |
+      Generate a concise standup summary from available context.
+      Include completed work, active risks, and next actions.
+  - id: notify
+    type: notification
+    priority: medium
+    category: workflow.standup
+    title: Daily Standup Report
+    body: "{{summarize.output.text}}"

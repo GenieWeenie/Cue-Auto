@@ -35,6 +35,8 @@ OnApprovalCallback = Callable[[str, bool, UnifiedMessage], Awaitable[bool]]
 _COMMAND_HELP: list[tuple[str, str]] = [
     ("help", "Show commands and quick actions"),
     ("status", "Runtime status dashboard"),
+    ("agents", "Multi-agent status tree"),
+    ("workflow", "Workflow list and execution"),
     ("tasks", "Task queue view"),
     ("skills", "Loaded skills"),
     ("usage", "LLM usage and spend"),
@@ -48,6 +50,8 @@ _COMMAND_HELP: list[tuple[str, str]] = [
 _CALLBACK_TO_COMMAND: dict[str, str] = {
     "help": "/help",
     "status": "/status",
+    "agents": "/agents",
+    "workflow": "/workflow list",
     "tasks": "/tasks",
     "skills": "/skills",
     "usage": "/usage",
@@ -83,6 +87,8 @@ class TelegramGateway:
         self.app.add_handler(CommandHandler("start", self._handle_start))
         self.app.add_handler(CommandHandler("help", self._handle_command_message))
         self.app.add_handler(CommandHandler("status", self._handle_command_message))
+        self.app.add_handler(CommandHandler("agents", self._handle_command_message))
+        self.app.add_handler(CommandHandler("workflow", self._handle_command_message))
         self.app.add_handler(CommandHandler("task", self._handle_command_message))
         self.app.add_handler(CommandHandler("tasks", self._handle_command_message))
         self.app.add_handler(CommandHandler("skills", self._handle_command_message))

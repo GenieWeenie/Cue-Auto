@@ -209,6 +209,7 @@ class HealthServer:
         runtime = snapshot.get("runtime", {})
         providers = snapshot.get("providers", {})
         agents = snapshot.get("agents", {})
+        workflows = snapshot.get("workflows", {})
         queue = snapshot.get("queue", {})
         queue_stats = queue.get("task_queue", {}) if isinstance(queue, dict) else {}
         provider_lines = self._provider_badges(providers)
@@ -221,6 +222,7 @@ class HealthServer:
                 f"{self._card('Current Task', self._text_or_none(runtime.get('current_task')))}"
                 f"{self._card('Provider Health', provider_lines)}"
                 f"{self._card('Multi-Agent', self._agent_lines(agents))}"
+                f"{self._card('Workflows', self._workflow_lines(workflows))}"
                 f"{self._card('Task Queue', self._queue_lines(queue_stats))}"
                 "</section>"
             ),
@@ -390,6 +392,21 @@ class HealthServer:
             f"requests=<code>{escape(str(agents.get('subagent_requests', 0)))}</code> · "
             "subagent_cost_usd="
             f"<code>{escape(str(agents.get('subagent_estimated_cost_usd', 0.0)))}</code>"
+            "</div>"
+        )
+
+    def _workflow_lines(self, workflows: Any) -> str:
+        if not isinstance(workflows, dict):
+            return "No workflow data."
+        return (
+            "<div>"
+            f"enabled=<code>{escape(str(workflows.get('enabled', False)))}</code> · "
+            f"loaded=<code>{escape(str(workflows.get('loaded', 0)))}</code> · "
+            f"templates=<code>{escape(str(workflows.get('templates', 0)))}</code>"
+            "</div>"
+            "<div>"
+            f"running_tasks=<code>{escape(str(workflows.get('running_tasks', 0)))}</code> · "
+            f"hot_reload=<code>{escape(str(workflows.get('hot_reload', False)))}</code>"
             "</div>"
         )
 

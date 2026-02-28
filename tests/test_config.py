@@ -34,6 +34,9 @@ def test_default_config():
     assert config.multi_agent_max_concurrent == 3
     assert config.multi_agent_subagent_timeout_seconds == 120
     assert config.multi_agent_default_provider_preference == "auto"
+    assert config.workflows_enabled is True
+    assert config.workflows_dir == "workflows"
+    assert config.workflows_hot_reload is True
 
 
 def test_has_provider_flags():

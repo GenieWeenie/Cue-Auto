@@ -115,6 +115,9 @@ class CueConfig(BaseSettings):
     multi_agent_max_concurrent: int = 3
     multi_agent_subagent_timeout_seconds: int = 120
     multi_agent_default_provider_preference: str = "auto"
+    workflows_enabled: bool = True
+    workflows_dir: str = "workflows"
+    workflows_hot_reload: bool = True
 
     # --- Healthcheck endpoint ---
     healthcheck_enabled: bool = True

@@ -117,11 +117,18 @@ Cue-Auto/
 │   │   └── tasks.py           # Scheduled task implementations
 │   ├── health/
 │   │   └── server.py          # Health endpoint + optional web dashboard
+│   ├── workflows/
+│   │   ├── loader.py          # YAML workflow definition loader
+│   │   ├── engine.py          # Workflow runner (LLM/tool/approval/parallel/condition)
+│   │   ├── manager.py         # Trigger routing + run coordination
+│   │   └── watcher.py         # Filesystem hot-reload watcher
 │   └── skills/
 │       ├── loader.py          # Discovers and loads skills
 │       └── watcher.py         # Filesystem polling for hot-reload
 ├── skills/                    # Drop skills here (auto-discovered)
 │   └── example_hello.py
+├── workflows/
+│   └── templates/             # Example workflow templates
 ├── tests/
 ├── SOUL.md                    # Agent identity and personality
 ├── .env.example               # All configuration variables
@@ -229,7 +236,7 @@ docker compose -f docker-compose.yml -f docker-compose.webhook.yml up -d --build
 python -m cue_agent --mode polling
 ```
 
-Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/agents`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`, `/audit`, `/users`, `/market`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
+Chat with CueAgent directly through Telegram. The bot configures a command menu (`/help`, `/status`, `/agents`, `/workflow`, `/tasks`, `/skills`, `/usage`, `/approve`, `/settings`, `/audit`, `/users`, `/market`) and renders rich inline views with navigation buttons. High-risk actions trigger inline Approve/Reject/Details controls.
 
 ### Webhook Mode (Telegram HTTPS)
 
@@ -295,6 +302,7 @@ Use these in Telegram chat:
 - `/audit json|csv|markdown [event=...] [risk=...] [outcome=...] [user=...] [start=YYYY-MM-DD] [end=YYYY-MM-DD]` — export filtered audit trail
 - `/users me|list|role|remove` — inspect and manage user-role access
 - `/market search|install|update` — community registry workflow
+- `/workflow list|run|show|template` — reusable workflow management and execution
 - `/tasks` — list queued tasks
 - `/tasks pending|blocked|in_progress|failed|done|all`
 - `/tasks download|export|json` — export tasks as a JSON attachment
@@ -572,6 +580,9 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 | `CUE_MULTI_AGENT_MAX_CONCURRENT` | `3` | Maximum concurrent sub-agents during handoff |
 | `CUE_MULTI_AGENT_SUBAGENT_TIMEOUT_SECONDS` | `120` | Timeout per sub-agent before kill/timeout state |
 | `CUE_MULTI_AGENT_DEFAULT_PROVIDER_PREFERENCE` | `auto` | Preferred provider for sub-agents (`auto`, `openai`, `anthropic`, `openrouter`, `lmstudio`) |
+| `CUE_WORKFLOWS_ENABLED` | `true` | Enable custom workflow builder execution engine |
+| `CUE_WORKFLOWS_DIR` | `workflows` | Directory containing hot-reloadable `*.yaml` workflow definitions |
+| `CUE_WORKFLOWS_HOT_RELOAD` | `true` | Enable filesystem watcher for workflow definition changes |
 | `CUE_HEALTHCHECK_ENABLED` | `true` | Enable `/healthz` endpoint for probes |
 | `CUE_HEALTHCHECK_HOST` | `0.0.0.0` | Health endpoint bind host |
 | `CUE_HEALTHCHECK_PORT` | `8080` | Health endpoint bind port |

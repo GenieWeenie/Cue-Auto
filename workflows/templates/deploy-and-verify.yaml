@@ -1,0 +1,27 @@
+name: deploy-and-verify
+description: Example deployment workflow with approval and post-check notification.
+trigger:
+  manual: true
+  schedules: []
+  events: []
+steps:
+  - id: approval_gate
+    type: approval
+    prompt: "Deploy to production now?"
+  - id: deploy
+    type: tool
+    tool: run_shell
+    retry_attempts: 2
+    arguments:
+      command: "echo deploy-placeholder"
+  - id: verify
+    type: tool
+    tool: run_shell
+    arguments:
+      command: "echo verify-placeholder"
+  - id: notify
+    type: notification
+    priority: high
+    category: workflow.deploy
+    title: Deployment Workflow Result
+    body: "Deploy output={{deploy.output.result}} verify output={{verify.output.result}}"
