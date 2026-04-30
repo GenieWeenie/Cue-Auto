@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import inspect
 import uuid
@@ -59,4 +60,16 @@ class SkillTestHarness:
         signature = inspect.signature(func)
         if "context" in signature.parameters and "context" not in kwargs:
             kwargs["context"] = context or MockSkillContext()
+        if inspect.iscoroutinefunction(func):
+            return asyncio.run(func(**kwargs))
+        return func(**kwargs)
+
+    async def run_tool_async(self, name: str, *, context: MockSkillContext | None = None, **kwargs: Any) -> Any:
+        """Async variant — use inside an already-running event loop."""
+        func = self.get_tool(name)
+        signature = inspect.signature(func)
+        if "context" in signature.parameters and "context" not in kwargs:
+            kwargs["context"] = context or MockSkillContext()
+        if inspect.iscoroutinefunction(func):
+            return await func(**kwargs)
         return func(**kwargs)

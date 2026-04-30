@@ -35,7 +35,23 @@ class TaskQueue:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.execute("PRAGMA foreign_keys = ON")
+            if db_path != ":memory:":
+                self._conn.execute("PRAGMA journal_mode=WAL")
             self._ensure_schema_locked()
+
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        with self._lock:
+            try:
+                self._conn.close()
+            except sqlite3.ProgrammingError:
+                pass  # already closed
+
+    def __enter__(self) -> TaskQueue:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
 
     def create_task(
         self,
@@ -277,7 +293,7 @@ class TaskQueue:
             self._conn.execute(
                 """
                 UPDATE tasks
-                SET status = ?, updated_at = ?
+                SET status = ?, updated_at = ?, attempt_count = 0, last_error = ''
                 WHERE id = ? AND status IN (?, ?)
                 """,
                 (
@@ -290,6 +306,33 @@ class TaskQueue:
             )
             self._refresh_blocked_states_locked(now=now)
             self._conn.commit()
+
+    def cancel_task(self, task_id: int, reason: str = "") -> bool:
+        """Cancel a task. Returns True if the task was found in a cancellable state."""
+        with self._lock:
+            now = _utcnow()
+            cursor = self._conn.execute(
+                """
+                UPDATE tasks
+                SET status = ?, updated_at = ?, last_error = ?
+                WHERE id = ? AND status IN (?, ?, ?, ?)
+                """,
+                (
+                    TASK_STATUS_CANCELED,
+                    now,
+                    ("canceled: " + reason.strip())[:1000] if reason else "canceled",
+                    task_id,
+                    TASK_STATUS_PENDING,
+                    TASK_STATUS_BLOCKED,
+                    TASK_STATUS_IN_PROGRESS,
+                    TASK_STATUS_FAILED,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return False
+            self._refresh_blocked_states_locked(now=now)
+            self._conn.commit()
+            return True
 
     def child_count(self, parent_task_id: int) -> int:
         with self._lock:

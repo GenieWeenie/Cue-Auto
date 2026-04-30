@@ -67,14 +67,26 @@ class SkillWatcher:
         for key, mtime in current.items():
             if key not in self._mtimes:
                 logger.info("New skill detected: %s", key)
-                await self._on_change(Path(key), "created")
-            elif mtime != self._mtimes[key]:
+                await self._safe_emit(Path(key), "created")
+            elif _mtime_changed(mtime, self._mtimes[key]):
                 logger.info("Skill modified: %s", key)
-                await self._on_change(Path(key), "modified")
+                await self._safe_emit(Path(key), "modified")
 
         # Check for deleted files
         for key in set(self._mtimes) - set(current):
             logger.info("Skill deleted: %s", key)
-            await self._on_change(Path(key), "deleted")
+            await self._safe_emit(Path(key), "deleted")
 
         self._mtimes = current
+
+    async def _safe_emit(self, path: Path, kind: str) -> None:
+        """Emit a change event, isolating failures per-callback."""
+        try:
+            await self._on_change(path, kind)
+        except Exception:
+            logger.exception("Skill watcher callback failed", extra={"path": str(path), "event_type": kind})
+
+
+def _mtime_changed(new: float, old: float) -> bool:
+    """Compare mtimes with tolerance for float imprecision."""
+    return abs(new - old) > 0.01

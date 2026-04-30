@@ -44,7 +44,23 @@ class AuditTrail:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         with self._lock:
+            if db_path != ":memory:":
+                self._conn.execute("PRAGMA journal_mode=WAL")
             self._ensure_schema_locked()
+
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        with self._lock:
+            try:
+                self._conn.close()
+            except sqlite3.ProgrammingError:
+                pass  # already closed
+
+    def __enter__(self) -> AuditTrail:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
 
     def record_event(
         self,

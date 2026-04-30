@@ -3,8 +3,11 @@
 import argparse
 import asyncio
 import json
+import logging
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -249,7 +252,16 @@ def main() -> None:
     from cue_agent.app import CueApp
 
     app = CueApp()
-    asyncio.run(app.start(mode=args.mode))
+    try:
+        asyncio.run(app.start(mode=args.mode))
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested by user (Ctrl+C)")
+        sys.exit(130)
+    except SystemExit:
+        raise
+    except Exception:
+        logger.exception("Fatal application error")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

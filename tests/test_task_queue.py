@@ -84,3 +84,100 @@ def test_task_queue_list_child_tasks_by_status(tmp_path):
 
     assert [row["id"] for row in pending_rows] == [pending_child_id]
     assert {row["id"] for row in all_rows} == {pending_child_id, done_child_id}
+
+
+def test_task_queue_context_manager(tmp_path):
+    """TaskQueue supports context manager protocol."""
+    db_path = str(tmp_path / "queue.db")
+    with TaskQueue(db_path) as queue:
+        task_id = queue.create_task("Context manager task", priority=2)
+        assert queue.get_task(task_id) is not None
+    # After context exit, connection is closed
+    # Operations should fail
+    import sqlite3
+
+    try:
+        queue.get_task(task_id)
+        assert False, "Expected ProgrammingError after close"
+    except sqlite3.ProgrammingError:
+        pass  # expected
+
+
+def test_task_queue_close_idempotent(tmp_path):
+    """Calling close() twice does not raise."""
+    db_path = str(tmp_path / "queue.db")
+    queue = TaskQueue(db_path)
+    queue.create_task("Task", priority=2)
+    queue.close()
+    queue.close()  # should not raise
+
+
+def test_task_queue_cancel_task(tmp_path):
+    """cancel_task sets status to canceled and returns True."""
+    db_path = str(tmp_path / "queue.db")
+    queue = TaskQueue(db_path)
+    task_id = queue.create_task("Cancel me", priority=2)
+
+    assert queue.cancel_task(task_id, reason="not needed") is True
+    task = queue.get_task(task_id)
+    assert task is not None
+    assert task["status"] == "canceled"
+    assert "not needed" in task["last_error"]
+
+
+def test_task_queue_cancel_done_task_fails(tmp_path):
+    """cancel_task returns False for already-done tasks."""
+    db_path = str(tmp_path / "queue.db")
+    queue = TaskQueue(db_path)
+    task_id = queue.create_task("Already done", priority=2)
+    queue.mark_done(task_id)
+
+    assert queue.cancel_task(task_id) is False
+    task = queue.get_task(task_id)
+    assert task is not None
+    assert task["status"] == "done"
+
+
+def test_task_queue_cancel_in_progress_task(tmp_path):
+    db_path = str(tmp_path / "queue.db")
+    queue = TaskQueue(db_path)
+    task_id = queue.create_task("In progress", priority=2)
+    queue.mark_in_progress(task_id)
+
+    assert queue.cancel_task(task_id, reason="aborted") is True
+    task = queue.get_task(task_id)
+    assert task is not None
+    assert task["status"] == "canceled"
+
+
+def test_task_queue_retry_resets_attempt_count(tmp_path):
+    """retry_task resets attempt_count and last_error."""
+    db_path = str(tmp_path / "queue.db")
+    queue = TaskQueue(db_path)
+    task_id = queue.create_task("Retry me", priority=2)
+
+    # Fail it with retry_limit=0 so it stays failed
+    queue.mark_in_progress(task_id)
+    queue.mark_failed(task_id, "permanent error", retry_limit=0)
+    task = queue.get_task(task_id)
+    assert task is not None
+    assert task["status"] == "failed"
+    assert task["attempt_count"] == 1
+    assert "permanent error" in task["last_error"]
+
+    # Retry it
+    queue.retry_task(task_id)
+    task = queue.get_task(task_id)
+    assert task is not None
+    assert task["status"] == "pending"
+    assert task["attempt_count"] == 0
+    assert task["last_error"] == ""
+
+
+def test_task_queue_wal_mode_enabled(tmp_path):
+    """File-backed databases use WAL journal mode."""
+    db_path = str(tmp_path / "queue.db")
+    queue = TaskQueue(db_path)
+    row = queue._conn.execute("PRAGMA journal_mode").fetchone()
+    assert str(row[0]) == "wal"
+    queue.close()

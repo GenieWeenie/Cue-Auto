@@ -439,3 +439,106 @@ async def test_ralph_loop_cooldown_after_failures():
 
     # Cooldown sleep should have been called on the third run_once (with 0 seconds)
     assert any(c == 0 for c in sleep_calls), "Expected asyncio.sleep(0) from cooldown"
+
+
+@pytest.mark.asyncio
+async def test_loop_does_not_block_event_loop_during_llm_calls():
+    """LLM calls run via asyncio.to_thread, allowing other coroutines to proceed."""
+    import asyncio
+    import time
+
+    class _SlowBrain:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, prompt: str, extra_context: str | None = None) -> str:
+            time.sleep(0.15)
+            self.calls += 1
+            if self.calls == 1:
+                return "Run backup"
+            return "SUCCESS - done"
+
+        def plan(self, task, manifest, memory_context=""):
+            time.sleep(0.15)
+            return SimpleNamespace(steps=[SimpleNamespace(step_id="s0")])
+
+    brain = _SlowBrain()
+    memory = _FakeMemory()
+    loop_obj = RalphLoop(
+        brain=brain,
+        memory=memory,
+        actions=_FakeActions(),
+        executor=_FakeExecutor(),
+        state_manager=object(),
+        approval_gate=_FakeApprovalGate(),
+        config=CueConfig(loop_interval_seconds=1),
+    )
+
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.02)
+            ticks += 1
+
+    ticker_task = asyncio.ensure_future(ticker())
+    await loop_obj.run_once()
+    ticker_task.cancel()
+    try:
+        await ticker_task
+    except asyncio.CancelledError:
+        pass
+
+    # The LLM calls sleep for ~0.3s total. If the event loop is not blocked,
+    # the ticker should have fired multiple times.
+    assert ticks >= 3, f"Event loop appeared blocked — only {ticks} ticks during LLM calls"
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_batch_cap_is_max_concurrent():
+    """specs are capped to max_concurrent, not 2x."""
+    brain = _FakeBrain(["SUCCESS - done"])
+    memory = _FakeMemory()
+    task_queue = _FakeTaskQueue()
+    task_queue._next_task = {
+        "id": 1,
+        "title": "Parent",
+        "description": "",
+        "priority": 2,
+    }
+    task_queue._children = [
+        {
+            "id": 10 + i,
+            "title": f"Child {i}",
+            "description": "",
+            "priority": 3,
+            "status": "pending",
+            "parent_task_id": 1,
+        }
+        for i in range(6)
+    ]
+    orchestrator = _FakeOrchestrator()
+    loop_obj = RalphLoop(
+        brain=brain,
+        memory=memory,
+        actions=_FakeActions(),
+        executor=_FakeExecutor(),
+        state_manager=object(),
+        approval_gate=_FakeApprovalGate(),
+        config=CueConfig(
+            task_queue_enabled=True,
+            task_queue_auto_subtasks_enabled=False,
+            multi_agent_enabled=True,
+            multi_agent_max_concurrent=3,
+            multi_agent_subagent_timeout_seconds=60,
+        ),
+        task_queue=task_queue,
+        multi_agent_orchestrator=orchestrator,  # type: ignore[arg-type]
+    )
+
+    await loop_obj.run_once()
+
+    # The orchestrator should have been called with exactly 3 specs (max_concurrent)
+    assert len(orchestrator.calls) == 1
+    assert orchestrator.calls[0]["spec_count"] == 3

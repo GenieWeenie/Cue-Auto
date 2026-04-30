@@ -188,3 +188,76 @@ async def test_disabled_category_other_category_still_delivered():
     assert sent == 1
     assert len(bot.sent) == 1
     assert "Approval needed" in bot.sent[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_notification_event_metadata_is_immutable():
+    """NotificationEvent.metadata should be a read-only Mapping."""
+    bot = _FakeBot()
+    manager = NotificationManager(
+        CueConfig(
+            notifications_enabled=True,
+            notification_delivery_mode="immediate",
+            notification_priority_threshold="low",
+            notification_quiet_hours_start=22,
+            notification_quiet_hours_end=7,
+            notification_timezone="UTC",
+        ),
+        bot=bot,
+        admin_chat_id=42,
+        now_provider=_make_now(12),
+    )
+    manager.emit(
+        category="test",
+        priority="medium",
+        title="Test",
+        body="body",
+        metadata={"key": "value"},
+    )
+    assert manager.queue_size() == 1
+    event = manager._queue[0]
+    assert event.metadata["key"] == "value"
+    # Mutation should raise TypeError (MappingProxyType is read-only)
+    with pytest.raises(TypeError):
+        event.metadata["key"] = "mutated"  # type: ignore[index]
+
+
+def test_notification_manager_emit_thread_safety():
+    """Concurrent emit() calls from multiple threads should not lose events."""
+    import threading
+
+    bot = _FakeBot()
+    manager = NotificationManager(
+        CueConfig(
+            notifications_enabled=True,
+            notification_delivery_mode="hourly",
+            notification_priority_threshold="low",
+            notification_quiet_hours_start=22,
+            notification_quiet_hours_end=7,
+            notification_timezone="UTC",
+        ),
+        bot=bot,
+        admin_chat_id=42,
+        now_provider=_make_now(12),
+    )
+
+    num_threads = 50
+    barrier = threading.Barrier(num_threads)
+
+    def emit_events():
+        barrier.wait()
+        for i in range(10):
+            manager.emit(
+                category="stress_test",
+                priority="low",
+                title=f"Event {i}",
+                body="body",
+            )
+
+    threads = [threading.Thread(target=emit_events) for _ in range(num_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert manager.queue_size() == num_threads * 10
