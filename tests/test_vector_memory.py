@@ -292,6 +292,43 @@ def test_vector_memory_recall_empty_query_returns_empty(monkeypatch):
     assert vm.recall("chat-q", "   ") == ""
 
 
+def test_vector_memory_close_clears_availability(monkeypatch):
+    """close() should set is_available to False."""
+    stores = _make_stores()
+    _inject_fake_chromadb(monkeypatch, stores)
+
+    vm = VectorMemory(
+        CueConfig(
+            vector_memory_enabled=True,
+            vector_memory_path="p",
+            vector_memory_collection="c",
+        )
+    )
+    assert vm.is_available is True
+    vm.close()
+    assert vm.is_available is False
+
+    # Operations after close should be no-ops, not crashes
+    vm.add_turn("chat-1", "user", "after close")
+    assert vm.recall("chat-1", "close") == ""
+
+
+def test_vector_memory_close_idempotent(monkeypatch):
+    """Calling close() twice should not raise."""
+    stores = _make_stores()
+    _inject_fake_chromadb(monkeypatch, stores)
+
+    vm = VectorMemory(
+        CueConfig(
+            vector_memory_enabled=True,
+            vector_memory_path="p",
+            vector_memory_collection="c",
+        )
+    )
+    vm.close()
+    vm.close()  # should not raise
+
+
 def test_vector_memory_consolidate_uses_fallback_summary_when_no_summarizer(monkeypatch):
     """When summarizer is None, _build_summary uses deterministic fallback."""
     stores = _make_stores()

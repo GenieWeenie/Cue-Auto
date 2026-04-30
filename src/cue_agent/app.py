@@ -1949,6 +1949,9 @@ class CueApp:
             await self.health_server.stop()
         if self.telegram:
             await self.telegram.stop()
+        self.task_queue.close()
+        self.audit_trail.close()
+        self.vector_memory.close()
         logger.info("CueAgent shut down")
 
     async def _flush_notifications_digest(self, *, batched: bool) -> None:

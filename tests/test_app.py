@@ -241,6 +241,9 @@ def _install_fakes(
             self._enabled = config.vector_memory_enabled
             self.is_available = config.vector_memory_enabled
 
+        def close(self) -> None:
+            pass
+
         def add_turn(self, chat_id: str, role: str, content: str, run_id: str | None = None):
             if not self._enabled:
                 return
@@ -304,6 +307,9 @@ def _install_fakes(
 
         def retry_task(self, task_id):
             t.task_retries.append(task_id)
+
+        def close(self) -> None:
+            pass
 
         def queue_stats(self):
             return {"pending": 0, "blocked": 0, "in_progress": 0, "failed": 0, "done": 0, "canceled": 0, "total": 0}

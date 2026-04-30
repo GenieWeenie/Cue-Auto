@@ -111,8 +111,28 @@ def _apply_module_log_levels() -> None:
 
 def setup_logging(stream: TextIO | None = None) -> None:
     """Configure root logging with optional JSON output."""
-    log_level = _normalize_level(os.getenv("EAP_LOG_LEVEL"), default=logging.INFO)
-    log_format = (os.getenv("EAP_LOG_FORMAT") or "text").lower()
+    # CUE_LOG_LEVEL / CUE_LOG_FORMAT are canonical; EAP_* retained as deprecated fallback.
+    # TODO: Remove EAP_* fallback after one release cycle.
+    log_level_raw = os.getenv("CUE_LOG_LEVEL") or os.getenv("EAP_LOG_LEVEL")
+    log_format_raw = os.getenv("CUE_LOG_FORMAT") or os.getenv("EAP_LOG_FORMAT")
+    if os.getenv("EAP_LOG_LEVEL") and not os.getenv("CUE_LOG_LEVEL"):
+        import warnings
+
+        warnings.warn(
+            "EAP_LOG_LEVEL is deprecated; use CUE_LOG_LEVEL instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if os.getenv("EAP_LOG_FORMAT") and not os.getenv("CUE_LOG_FORMAT"):
+        import warnings
+
+        warnings.warn(
+            "EAP_LOG_FORMAT is deprecated; use CUE_LOG_FORMAT instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    log_level = _normalize_level(log_level_raw, default=logging.INFO)
+    log_format = (log_format_raw or "text").lower()
 
     root = logging.getLogger()
     root.handlers.clear()
