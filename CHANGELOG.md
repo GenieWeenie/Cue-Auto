@@ -6,6 +6,10 @@ All notable changes to CueAgent are documented here. The format is based on [Kee
 
 ### Added
 
+- **GEN-220** `TaskQueue.recover_stale_in_progress()` and a `task_queue_stale_recovery_seconds` config (default 30 min). On `CueApp.start`, any `in_progress` task whose `started_at` / `updated_at` is older than the threshold is reverted to `pending` and audit-logged.
+- **GEN-216** Regression test for `SkillWatcher` per-callback failure isolation: a callback that raises for one path no longer prevents emits for sibling paths and `_mtimes` still advances.
+- **GEN-217** Regression test for `_delegate_subtasks` empty/whitespace-title guard: such children are skipped and never marked `in_progress`.
+- **GEN-218** Regression test for the iteration-failure invariant: a single failing iteration calls `mark_failed`, emits a high-priority notification, and increments `_consecutive_failures` together.
 - CONTRIBUTING.md with dev setup, tests, Ruff/mypy, and PR expectations.
 - ROADMAP.md and ROADMAP_DETAILED.md for post-launch fixes and improvements.
 - README project structure extended with `orchestration/`, `audit/`, `notifications/`, and top-level helpers.
@@ -24,6 +28,7 @@ All notable changes to CueAgent are documented here. The format is based on [Kee
 
 ### Changed
 
+- **GEN-219** Migrated legacy top-level EAP imports (`environment.*`, `protocol.*`, `agent.*`) to the canonical `eap.*` package paths in `app.py`, `loop/ralph_loop.py`, `brain/cue_brain.py`, `security/approval_gate.py`, `memory/session_memory.py`, and `actions/registry.py`. Two call sites remain on legacy imports because the pinned EAP commit does not yet expose `eap.agent.providers.*` or `MemoryStrategy` via `eap.protocol.models` — both flagged with TODOs and will migrate on the next EAP bump.
 - README: CI badge and clone URL updated to GenieWeenie/Cue-Auto.
 - README: Configuration reference table now includes `CUE_RUN_MODE`, `CUE_RETRY_*`, and `CUE_CIRCUIT_BREAKER_*`.
 - Logging env vars: `CUE_LOG_LEVEL` and `CUE_LOG_FORMAT` are now canonical; `EAP_LOG_LEVEL`/`EAP_LOG_FORMAT` still work as deprecated fallbacks.

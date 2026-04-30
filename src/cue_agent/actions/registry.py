@@ -8,7 +8,7 @@ import time
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Dict, cast
 
-from environment.tool_registry import ToolRegistry
+from eap.environment.tool_registry import ToolRegistry
 
 from cue_agent.actions.builtin_tools import (
     read_file,

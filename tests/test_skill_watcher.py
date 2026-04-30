@@ -86,5 +86,43 @@ async def test_skill_watcher_start_stop(tmp_path: Path) -> None:
     assert not watcher._running
 
 
+@pytest.mark.asyncio
+async def test_skill_watcher_callback_failure_isolated_per_event(
+    tmp_path: Path,
+) -> None:
+    """A callback that raises for one path must not block emits for other paths,
+    and `_mtimes` must still advance so failed paths are not re-emitted forever."""
+    seen: list[tuple[str, str]] = []
+
+    async def on_change(path: Path, event_type: str) -> None:
+        seen.append((path.name, event_type))
+        if path.name == "boom.py":
+            raise RuntimeError("simulated callback failure")
+
+    watcher = SkillWatcher(str(tmp_path), on_change=on_change)
+    watcher._mtimes = watcher._scan()
+
+    (tmp_path / "boom.py").write_text("a = 1", encoding="utf-8")
+    (tmp_path / "ok_a.py").write_text("a = 1", encoding="utf-8")
+    (tmp_path / "ok_b.py").write_text("b = 2", encoding="utf-8")
+
+    # Even though the boom.py callback raises, the watcher must keep going and
+    # emit "created" for the other two files, and _mtimes must advance.
+    await watcher._check_changes()
+
+    names_seen = {name for name, _ in seen}
+    assert {"boom.py", "ok_a.py", "ok_b.py"}.issubset(names_seen)
+    assert {"created"} == {kind for _, kind in seen}
+    assert str(tmp_path / "boom.py") in watcher._mtimes
+    assert str(tmp_path / "ok_a.py") in watcher._mtimes
+    assert str(tmp_path / "ok_b.py") in watcher._mtimes
+
+    # Subsequent unchanged scan must not re-emit anything (mtimes advanced even
+    # for the failing path).
+    seen.clear()
+    await watcher._check_changes()
+    assert seen == []
+
+
 async def _noop(path: Path, event_type: str) -> None:
     del path, event_type

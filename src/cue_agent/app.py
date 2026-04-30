@@ -12,8 +12,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
-from environment.executor import AsyncLocalExecutor
-from protocol.state_manager import StateManager
+from eap.environment.executor import AsyncLocalExecutor
+from eap.protocol.state_manager import StateManager
 
 from cue_agent import __version__ as cue_agent_version
 from cue_agent.actions.registry import ActionRegistry
@@ -1507,6 +1507,36 @@ class CueApp:
         if overflow > 0:
             del self._action_timeline[:overflow]
 
+    def _recover_stale_tasks(self) -> None:
+        """Revert any `in_progress` tasks left over from a prior crash to `pending`."""
+        threshold = max(0, int(getattr(self.config, "task_queue_stale_recovery_seconds", 0)))
+        if threshold <= 0:
+            return
+        try:
+            recovered = self.task_queue.recover_stale_in_progress(stale_after_seconds=threshold)
+        except Exception:
+            logger.exception("Stale-task recovery failed at startup; continuing without it")
+            return
+        if not recovered:
+            return
+        ids = [int(task["id"]) for task in recovered]
+        logger.warning(
+            "Recovered %d stale in_progress task(s) on startup (threshold=%ds): %s",
+            len(recovered),
+            threshold,
+            ids,
+        )
+        self._record_audit_event(
+            event_type="task_queue",
+            action="recover_stale_in_progress",
+            outcome="recovered",
+            details={
+                "task_ids": ids,
+                "threshold_seconds": threshold,
+                "count": len(recovered),
+            },
+        )
+
     def _record_audit_event(
         self,
         *,
@@ -1743,6 +1773,8 @@ class CueApp:
             len(self.actions.skill_names),
             self.actions.skill_names,
         )
+
+        self._recover_stale_tasks()
 
         if self.config.healthcheck_enabled:
             await self.health_server.start()

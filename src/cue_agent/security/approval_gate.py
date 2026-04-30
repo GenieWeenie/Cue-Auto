@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from protocol.models import BatchedMacroRequest, StepApprovalCheckpoint
+from eap.protocol.models import BatchedMacroRequest, StepApprovalCheckpoint
 
 from cue_agent.comms.approval_gateway import ApprovalGateway
 from cue_agent.security.risk_classifier import RiskClassifier

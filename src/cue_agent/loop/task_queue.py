@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -333,6 +333,58 @@ class TaskQueue:
             self._refresh_blocked_states_locked(now=now)
             self._conn.commit()
             return True
+
+    def recover_stale_in_progress(self, stale_after_seconds: int) -> list[dict[str, Any]]:
+        """Revert `in_progress` tasks older than `stale_after_seconds` back to `pending`.
+
+        Intended to run once at process startup. A task is considered stale when the
+        most recent of `started_at` / `updated_at` is older than the threshold —
+        which catches both fresh in-flight tasks (crashed mid-iteration) and tasks
+        that were dispatched but whose worker never reported back.
+
+        Returns the list of recovered task records (post-update snapshot) so the
+        caller can log / audit them.
+        """
+        if stale_after_seconds <= 0:
+            return []
+
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
+        cutoff_iso = cutoff.isoformat()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE status = ?
+                  AND COALESCE(started_at, updated_at) < ?
+                """,
+                (TASK_STATUS_IN_PROGRESS, cutoff_iso),
+            ).fetchall()
+            if not rows:
+                return []
+
+            now = _utcnow()
+            recovered: list[dict[str, Any]] = []
+            for row in rows:
+                task_id = int(row["id"])
+                prior_error = str(row["last_error"]) if row["last_error"] else ""
+                marker = "recovered: stale in_progress on startup"
+                new_error = (prior_error + " | " + marker if prior_error else marker)[:1000]
+                self._conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = ?, started_at = NULL, updated_at = ?, last_error = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (TASK_STATUS_PENDING, now, new_error, task_id, TASK_STATUS_IN_PROGRESS),
+                )
+                dep_map = self._dependency_map_locked([task_id])
+                refreshed = self._conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+                if refreshed is not None:
+                    recovered.append(self._row_to_task(refreshed, dep_map.get(task_id, [])))
+
+            self._refresh_blocked_states_locked(now=now)
+            self._conn.commit()
+            return recovered
 
     def child_count(self, parent_task_id: int) -> int:
         with self._lock:
