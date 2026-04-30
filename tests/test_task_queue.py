@@ -174,6 +174,69 @@ def test_task_queue_retry_resets_attempt_count(tmp_path):
     assert task["last_error"] == ""
 
 
+def test_task_queue_recover_stale_in_progress_reverts_old_tasks(tmp_path):
+    """Stale `in_progress` tasks (older than the threshold) revert to `pending`
+    on startup recovery; fresh in-progress tasks are left untouched."""
+    db_path = str(tmp_path / "queue.db")
+    queue = TaskQueue(db_path)
+
+    stale_id = queue.create_task("Stale", priority=2)
+    fresh_id = queue.create_task("Fresh", priority=2)
+    pending_id = queue.create_task("Pending — should not be affected", priority=2)
+
+    queue.mark_in_progress(stale_id)
+    queue.mark_in_progress(fresh_id)
+
+    # Backdate stale task: rewrite both started_at and updated_at to two hours ago.
+    queue._conn.execute(
+        "UPDATE tasks SET started_at = ?, updated_at = ? WHERE id = ?",
+        ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", stale_id),
+    )
+    queue._conn.commit()
+
+    recovered = queue.recover_stale_in_progress(stale_after_seconds=60)
+    assert len(recovered) == 1
+    assert recovered[0]["id"] == stale_id
+
+    stale = queue.get_task(stale_id)
+    assert stale is not None
+    assert stale["status"] == "pending"
+    assert stale["started_at"] is None
+    assert "stale in_progress on startup" in stale["last_error"]
+
+    # Fresh in-progress task is preserved.
+    fresh = queue.get_task(fresh_id)
+    assert fresh is not None
+    assert fresh["status"] == "in_progress"
+
+    # Untouched pending task stays pending.
+    pending = queue.get_task(pending_id)
+    assert pending is not None
+    assert pending["status"] == "pending"
+
+    # Idempotent: a second call recovers nothing.
+    assert queue.recover_stale_in_progress(stale_after_seconds=60) == []
+    queue.close()
+
+
+def test_task_queue_recover_stale_disabled_when_threshold_zero(tmp_path):
+    db_path = str(tmp_path / "queue.db")
+    queue = TaskQueue(db_path)
+    task_id = queue.create_task("Stale candidate", priority=2)
+    queue.mark_in_progress(task_id)
+    queue._conn.execute(
+        "UPDATE tasks SET started_at = ?, updated_at = ? WHERE id = ?",
+        ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", task_id),
+    )
+    queue._conn.commit()
+
+    assert queue.recover_stale_in_progress(stale_after_seconds=0) == []
+    task = queue.get_task(task_id)
+    assert task is not None
+    assert task["status"] == "in_progress"
+    queue.close()
+
+
 def test_task_queue_wal_mode_enabled(tmp_path):
     """File-backed databases use WAL journal mode."""
     db_path = str(tmp_path / "queue.db")

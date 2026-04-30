@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import uuid4
 
-from environment.executor import AsyncLocalExecutor
-from protocol.state_manager import StateManager
+from eap.environment.executor import AsyncLocalExecutor
+from eap.protocol.state_manager import StateManager
 
 from cue_agent.actions.registry import ActionRegistry
 from cue_agent.brain.cue_brain import CueBrain

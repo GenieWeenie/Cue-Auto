@@ -442,6 +442,57 @@ async def test_ralph_loop_cooldown_after_failures():
 
 
 @pytest.mark.asyncio
+async def test_iteration_failure_marks_failed_emits_notification_and_increments_cooldown():
+    """N7 invariant: when an iteration's macro execution fails after retries,
+    the queued task is marked failed, a high-priority notification is emitted,
+    AND `_consecutive_failures` increments — all in the same iteration."""
+    brain = _FakeBrain(["Run backup", "SUCCESS - unused"], macro_steps=1)
+    memory = _FakeMemory()
+    actions = _FakeActions()
+    executor = _FakeExecutor()
+    executor.failures_remaining = 999  # all retries fail
+    notifications: list[dict[str, str]] = []
+
+    def capture_notification(event: dict[str, str]) -> None:
+        notifications.append(event)
+
+    config = CueConfig(
+        loop_cooldown_after_failures=3,  # not yet triggered after a single failure
+        loop_cooldown_seconds=0,
+        retry_tool_attempts=1,
+        task_queue_retry_failed_attempts=0,  # mark_failed -> failed (not pending)
+    )
+    task_queue = _FakeTaskQueue()
+    task_queue._next_task = {"id": 7, "title": "Task seven", "description": "", "priority": 1}
+    loop = RalphLoop(
+        brain=brain,
+        memory=memory,
+        actions=actions,
+        executor=executor,
+        state_manager=object(),
+        approval_gate=_FakeApprovalGate(),
+        config=config,
+        task_queue=task_queue,
+        notification_handler=capture_notification,
+    )
+
+    assert loop._consecutive_failures == 0
+    with pytest.raises(RuntimeError, match="tool execution failed"):
+        await loop.run_once()
+
+    # mark_failed was called for the task
+    assert len(task_queue.marked_failed) == 1
+    assert task_queue.marked_failed[0]["task_id"] == 7
+    # high-priority "task_completion" notification was emitted
+    assert any(
+        n["event"] == "task_completion" and n["priority"] == "high" and "failed" in n["title"].lower()
+        for n in notifications
+    )
+    # consecutive_failures incremented (cooldown counter advanced)
+    assert loop._consecutive_failures == 1
+
+
+@pytest.mark.asyncio
 async def test_loop_does_not_block_event_loop_during_llm_calls():
     """LLM calls run via asyncio.to_thread, allowing other coroutines to proceed."""
     import asyncio
@@ -493,6 +544,76 @@ async def test_loop_does_not_block_event_loop_during_llm_calls():
     # The LLM calls sleep for ~0.3s total. If the event loop is not blocked,
     # the ticker should have fired multiple times.
     assert ticks >= 3, f"Event loop appeared blocked — only {ticks} ticks during LLM calls"
+
+
+@pytest.mark.asyncio
+async def test_delegate_subtasks_skips_empty_title_children():
+    """Children with blank/whitespace-only titles must not be marked in_progress
+    nor sent to the orchestrator — guards against orphan in_progress tasks
+    (the original P0.3 concern from the hardening brief)."""
+    brain = _FakeBrain(["SUCCESS - done"])
+    memory = _FakeMemory()
+    task_queue = _FakeTaskQueue()
+    task_queue._next_task = {
+        "id": 1,
+        "title": "Parent",
+        "description": "",
+        "priority": 2,
+    }
+    task_queue._children = [
+        {
+            "id": 10,
+            "title": "",  # empty — must be skipped
+            "description": "",
+            "priority": 3,
+            "status": "pending",
+            "parent_task_id": 1,
+        },
+        {
+            "id": 11,
+            "title": "   ",  # whitespace-only — also skipped
+            "description": "",
+            "priority": 3,
+            "status": "pending",
+            "parent_task_id": 1,
+        },
+        {
+            "id": 12,
+            "title": "Real subtask",
+            "description": "",
+            "priority": 3,
+            "status": "pending",
+            "parent_task_id": 1,
+        },
+    ]
+    orchestrator = _FakeOrchestrator()
+    loop_obj = RalphLoop(
+        brain=brain,
+        memory=memory,
+        actions=_FakeActions(),
+        executor=_FakeExecutor(),
+        state_manager=object(),
+        approval_gate=_FakeApprovalGate(),
+        config=CueConfig(
+            task_queue_enabled=True,
+            task_queue_auto_subtasks_enabled=False,
+            multi_agent_enabled=True,
+            multi_agent_max_concurrent=3,
+            multi_agent_subagent_timeout_seconds=60,
+        ),
+        task_queue=task_queue,
+        multi_agent_orchestrator=orchestrator,  # type: ignore[arg-type]
+    )
+
+    await loop_obj.run_once()
+
+    # Empty-title children must not become in_progress (P0.3 invariant).
+    assert 10 not in task_queue.marked_in_progress
+    assert 11 not in task_queue.marked_in_progress
+    assert 12 in task_queue.marked_in_progress
+    # Orchestrator received exactly the one valid spec.
+    assert len(orchestrator.calls) == 1
+    assert orchestrator.calls[0]["spec_count"] == 1
 
 
 @pytest.mark.asyncio

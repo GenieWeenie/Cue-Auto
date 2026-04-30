@@ -23,6 +23,7 @@ async def test_workflow_watcher_detects_change(tmp_path: Path):
 
     watcher = WorkflowWatcher(str(workflows_dir), on_reload=_on_reload)
     watcher._fingerprint = watcher._loader.fingerprint()  # type: ignore[attr-defined]
+    await asyncio.sleep(0.05)  # ensure rewrite produces a distinguishable mtime
     workflow_file.write_text(
         "name: demo\nsteps:\n  - id: s1\n    type: llm\n  - id: s2\n    type: llm\n", encoding="utf-8"
     )

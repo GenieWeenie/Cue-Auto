@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, Optional, cast
 
-from agent.agent_client import AgentClient
-from protocol.models import BatchedMacroRequest
+from eap.agent.agent_client import AgentClient
+from eap.protocol.models import BatchedMacroRequest
 
 from cue_agent.brain.llm_router import LLMRouter
 from cue_agent.brain.soul_loader import SoulLoader
