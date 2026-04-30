@@ -57,6 +57,7 @@ async def test_skill_watcher_check_changes_callback_created_modified_deleted(
     assert events[-1][1] == "created"
     assert events[-1][0].name == "new_skill.py"
 
+    await asyncio.sleep(0.05)  # ensure mtime differs with tolerance check
     (tmp_path / "new_skill.py").write_text("z = 4", encoding="utf-8")
     await watcher._check_changes()
     assert any(e[1] == "modified" for e in events)

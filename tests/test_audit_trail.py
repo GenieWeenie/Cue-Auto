@@ -123,3 +123,36 @@ def test_audit_trail_on_record_callback_called():
     assert received[0]["user_id"] == "u1"
     assert received[0]["details"] == {"role": "admin"}
     assert "id" in received[0] and received[0]["id"] >= 1
+
+
+def test_audit_trail_context_manager():
+    """AuditTrail supports context manager protocol."""
+    with AuditTrail(":memory:") as trail:
+        trail.record_event(event_type="test", action="open")
+        rows = trail.query(AuditQuery(limit=10))
+        assert len(rows) == 1
+    # After close, operations should raise
+    import sqlite3
+
+    try:
+        trail.query(AuditQuery(limit=10))
+        assert False, "Expected ProgrammingError after close"
+    except sqlite3.ProgrammingError:
+        pass
+
+
+def test_audit_trail_close_idempotent():
+    """Calling close() twice does not raise."""
+    trail = AuditTrail(":memory:")
+    trail.record_event(event_type="test", action="close")
+    trail.close()
+    trail.close()  # should not raise
+
+
+def test_audit_trail_wal_mode(tmp_path):
+    """File-backed databases use WAL journal mode."""
+    db_path = str(tmp_path / "audit.db")
+    trail = AuditTrail(db_path)
+    row = trail._conn.execute("PRAGMA journal_mode").fetchone()
+    assert str(row[0]) == "wal"
+    trail.close()

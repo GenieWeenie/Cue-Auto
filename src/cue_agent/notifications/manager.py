@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -30,7 +33,7 @@ class NotificationEvent:
     title: str
     body: str
     timestamp: datetime
-    metadata: dict[str, Any]
+    metadata: Mapping[str, Any]
 
 
 class NotificationManager:
@@ -53,6 +56,7 @@ class NotificationManager:
         self._now_provider = now_provider or datetime.now
         self._delivery_mode = config.notification_delivery_mode.strip().lower()
         self._priority_threshold = self._normalize_priority(config.notification_priority_threshold)
+        self._emit_lock = threading.Lock()
         raw = (config.notification_categories_disabled or "").strip()
         self._disabled_categories: set[str] = {s.strip().lower() for s in raw.split(",") if s.strip()} if raw else set()
         self._quiet_start = int(config.notification_quiet_hours_start) % 24
@@ -119,10 +123,11 @@ class NotificationManager:
             title=title.strip(),
             body=body.strip(),
             timestamp=self._now_provider(),
-            metadata=metadata or {},
+            metadata=MappingProxyType(dict(metadata or {})),
         )
-        self._queue.append(event)
-        self._event_counts[category] = self._event_counts.get(category, 0) + 1
+        with self._emit_lock:
+            self._queue.append(event)
+            self._event_counts[category] = self._event_counts.get(category, 0) + 1
         self._record_error_if_needed(event)
 
         if self._delivery_mode == "immediate":
