@@ -20,16 +20,33 @@ All notable changes to CueAgent are documented here. The format is based on [Kee
 - docs/deployment.md: link to observability.md.
 - CONTRIBUTING: PRs must pass Quality Gates CI; fix Ruff/mypy before pushing.
 - test_soul_loader: add test_load_caching for cache-hit path.
-- Verifier, TaskPicker, SkillTestHarness: add explicit `-> None` on __init__ for typing.
+- Verifier, TaskPicker, SkillTestHarness: add explicit `-> None` on **init** for typing.
 
 ### Changed
 
 - README: CI badge and clone URL updated to GenieWeenie/Cue-Auto.
 - README: Configuration reference table now includes `CUE_RUN_MODE`, `CUE_RETRY_*`, and `CUE_CIRCUIT_BREAKER_*`.
+- Logging env vars: `CUE_LOG_LEVEL` and `CUE_LOG_FORMAT` are now canonical; `EAP_LOG_LEVEL`/`EAP_LOG_FORMAT` still work as deprecated fallbacks.
 
 ### Fixed
 
 - Accidental `nul` file removed from Git tracking (kept in `.gitignore`).
+- **P0.1** Sync LLM calls no longer block the async event loop — all brain calls wrapped with `asyncio.to_thread`.
+- **P0.2** Prompt-injection defenses added to Verifier, TaskPicker, and subtask prompts (XML delimiters, angle-bracket escaping, strict first-token output parsing).
+- **P1.1** `TaskQueue` and `AuditTrail` now have `close()` / context manager + WAL journal mode for file-backed DBs.
+- **P1.2** `retry_task()` now resets `attempt_count` and `last_error` so re-attempted tasks start clean.
+- **P1.3** Sub-agent batch cap clarified: capped to `max_concurrent` instead of silently doubling it.
+- **P1.4** `SkillTestHarness.run_tool` now detects and awaits async tool functions; added `run_tool_async()` for use inside event loops.
+- **P1.5** `NotificationEvent.metadata` is now an immutable `MappingProxyType`.
+- **P2.1** Logging env vars standardized: `CUE_LOG_LEVEL` and `CUE_LOG_FORMAT` are canonical; `EAP_*` retained as deprecated fallbacks.
+- **P2.2** `SkillWatcher` isolates per-callback failures so one bad callback doesn't stop the others.
+- **P2.3** File mtime comparison uses tolerance to avoid false positives on fast writes.
+- **P2.4** New `cancel_task()` method on `TaskQueue` for admin-driven cancellation.
+- **P2.5** CLI wraps `asyncio.run` with proper top-level exception handling.
+- **P2.6** `NotificationManager.emit()` is now thread-safe via `threading.Lock`.
+- **N2** `VectorMemory.close()` added to release ChromaDB references; wired into `CueApp._shutdown`.
+- **N8** `NotificationManager._schedule_flush` now queues deferred flushes for when the event loop becomes available.
+- `CueApp._shutdown` now calls `close()` on `task_queue`, `audit_trail`, and `vector_memory`.
 
 ## [0.1.0] – initial release
 
