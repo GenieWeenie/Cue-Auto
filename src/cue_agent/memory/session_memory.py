@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from eap.protocol.models import MemoryStrategy
 from eap.protocol.state_manager import StateManager
-from protocol.models import MemoryStrategy  # noqa: I001 — not yet re-exported via eap.protocol.models
 
 logger = logging.getLogger(__name__)
 

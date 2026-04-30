@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from agent.providers.base import CompletionRequest, CompletionResponse, ProviderMessage
+from eap.agent.providers.base import CompletionRequest, CompletionResponse, ProviderMessage
 
 from cue_agent.brain.llm_router import LLMRouter
 from cue_agent.config import CueConfig

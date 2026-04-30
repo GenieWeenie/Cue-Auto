@@ -10,15 +10,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Iterator, cast
 
-# NOTE: `agent.providers.*` is not yet re-exported under `eap.*` in the pinned EAP commit.
-# Migrate to `eap.agent.providers.*` once upstream adds the shim (tracked in GEN-219).
-from agent.providers.base import (
+from eap.agent.providers.base import (
     CompletionRequest,
     CompletionResponse,
     LLMProvider,
     ProviderMessage,
 )
-from agent.providers.factory import create_provider
+from eap.agent.providers.factory import create_provider
 
 from cue_agent.config import CueConfig
 from cue_agent.retry_utils import backoff_delay_seconds
