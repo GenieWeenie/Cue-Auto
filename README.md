@@ -143,10 +143,26 @@ Cue-Auto/
 ├── SOUL.md                    # Agent identity and personality
 ├── .env.example               # All configuration variables
 ├── .env.production.example    # Production-ready Docker/systemd template
-├── docs/                      # deployment, security, architecture, observability, skills-sdk, REVIEW_AND_NEXT_ROADMAP
-│   └── deployment.md          # Docker, systemd, and cloud deployment guide
+├── docs/
+│   ├── deployment.md
+│   ├── security.md
+│   ├── architecture.md
+│   ├── observability.md
+│   └── skills-sdk.md
 └── pyproject.toml
 ```
+
+## Documentation
+
+| Doc                                            | Description                                               |
+| ---------------------------------------------- | --------------------------------------------------------- |
+| [docs/deployment.md](docs/deployment.md)       | Docker, systemd, webhook+SSL, and cloud deployment        |
+| [docs/security.md](docs/security.md)           | Risk controls, approval flows, RBAC, operational security |
+| [docs/architecture.md](docs/architecture.md)   | Orchestration, audit, notifications, data flow            |
+| [docs/observability.md](docs/observability.md) | Logging, cost/latency tracking, error monitoring          |
+| [docs/skills-sdk.md](docs/skills-sdk.md)       | Skill manifest, tools, config, testing, marketplace       |
+| [CONTRIBUTING.md](CONTRIBUTING.md)             | Dev setup, tests, lint, PR expectations                   |
+| [CHANGELOG.md](CHANGELOG.md)                   | Release history                                           |
 
 ## Setup
 
@@ -296,6 +312,7 @@ CUE_DASHBOARD_PASSWORD=replace-this
 ```
 
 The dashboard is served on the health endpoint port and protected by HTTP Basic Auth. Routes:
+
 - `/dashboard` — runtime summary (status, uptime, current task, provider health)
 - `/dashboard/actions` — action timeline with tool/risk/duration/outcome
 - `/dashboard/tasks` — queue stats and task list
@@ -349,12 +366,14 @@ cue-agent --export-audit-format markdown \
 ### Notification Delivery
 
 Operational notifications are sent to the Telegram admin chat for:
+
 - task completion/failure
 - high-risk actions requiring approval
 - provider outages
 - budget warnings and hard-stop events
 
 Delivery behavior is configurable:
+
 - `immediate` — send events as they happen (quiet-hours respected for non-critical alerts)
 - `hourly` — batch into hourly digest messages
 - `daily` — batch into daily digest messages
@@ -362,12 +381,14 @@ Delivery behavior is configurable:
 ## Multi-User Access
 
 CueAgent supports multi-user RBAC roles persisted in SQLite:
+
 - `admin` — full access including user-role management
 - `operator` — operations access including approvals and audit export
 - `user` — normal usage (chat, tasks, status, usage, skills)
 - `readonly` — view-only status/tasks/skills/usage
 
 User management commands:
+
 - `/users me`
 - `/users list`
 - `/users role <user_id> <admin|operator|user|readonly>`
@@ -424,6 +445,7 @@ def get_weather(location: str) -> dict:
 ```
 
 Convention:
+
 - Define a `SKILL_MANIFEST` dict at module level
 - Implement functions whose names match each entry in `tools[].name`
 - Functions receive keyword arguments matching the schema properties and return a `dict`
@@ -460,6 +482,7 @@ print(result)
 ### Example Skills
 
 Realistic examples are included in `skills/examples/`:
+
 - `research_brief.py`
 - `release_readiness.py`
 - `incident_timeline.py`
@@ -467,6 +490,7 @@ Realistic examples are included in `skills/examples/`:
 ### Hot Reload
 
 When `CUE_SKILLS_HOT_RELOAD=true` (default), a background watcher polls the skills directory every 2 seconds:
+
 - **New** `.py` files or folders with `skill.py` are loaded automatically
 - **Modified** files trigger a reload (re-imports the module)
 - **Deleted** files trigger an unload (tools removed from registry)
@@ -476,6 +500,7 @@ When `CUE_SKILLS_HOT_RELOAD=true` (default), a background watcher polls the skil
 CueAgent includes a local community registry flow for search/install/update with metadata and validation:
 
 CLI:
+
 - `cue-agent marketplace search <query>`
 - `cue-agent marketplace install <skill_id> [--version X.Y.Z]`
 - `cue-agent marketplace update <skill_id|all>`
@@ -483,15 +508,18 @@ CLI:
 - `cue-agent marketplace validate-submission <path>`
 
 Telegram:
+
 - `/market search <query>`
 - `/market install <skill_id> [version]`
 - `/market update [skill_id|all]`
 
 Registry and package defaults:
+
 - `skills/registry/index.json`
 - `skills/registry_packages/`
 
 Submission validation checks:
+
 - manifest shape and tool/function mapping
 - semver + CueAgent compatibility constraints
 - basic security scan for disallowed dangerous patterns
@@ -501,14 +529,15 @@ Submission validation checks:
 
 CueAgent classifies requests as simple vs complex and chooses provider order accordingly:
 
-| Priority | Provider | Config Key | Notes |
-|----------|----------|------------|-------|
-| 1 | OpenAI | `CUE_OPENAI_API_KEY` | Primary, GPT-4o default |
-| 2 | Anthropic | `CUE_ANTHROPIC_API_KEY` | Claude models |
-| 3 | OpenRouter | `CUE_OPENROUTER_API_KEY` | Aggregator, any model |
-| 4 | LM Studio | `CUE_LMSTUDIO_BASE_URL` | Local, always available |
+| Priority | Provider   | Config Key               | Notes                   |
+| -------- | ---------- | ------------------------ | ----------------------- |
+| 1        | OpenAI     | `CUE_OPENAI_API_KEY`     | Primary, GPT-4o default |
+| 2        | Anthropic  | `CUE_ANTHROPIC_API_KEY`  | Claude models           |
+| 3        | OpenRouter | `CUE_OPENROUTER_API_KEY` | Aggregator, any model   |
+| 4        | LM Studio  | `CUE_LMSTUDIO_BASE_URL`  | Local, always available |
 
 Routing behavior:
+
 - Simple prompts prioritize cheaper/faster providers (LM Studio/OpenRouter first).
 - Complex prompts prioritize stronger models (OpenAI/Anthropic first).
 - Router records per-provider request/token/latency/cost metrics.
@@ -529,97 +558,97 @@ pytest tests/ --cov=cue_agent --cov-report=term-missing
 
 ## Configuration Reference
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CUE_OPENAI_API_KEY` | `""` | OpenAI API key |
-| `CUE_OPENAI_MODEL` | `gpt-4o` | OpenAI model name |
-| `CUE_OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI base URL |
-| `CUE_ANTHROPIC_API_KEY` | `""` | Anthropic API key |
-| `CUE_ANTHROPIC_MODEL` | `claude-sonnet-4-20250514` | Claude model name |
-| `CUE_OPENROUTER_API_KEY` | `""` | OpenRouter API key |
-| `CUE_OPENROUTER_MODEL` | `openai/gpt-4o` | OpenRouter model name |
-| `CUE_OPENROUTER_BASE_URL` | `https://openrouter.ai/api` | OpenRouter base URL |
-| `CUE_LMSTUDIO_BASE_URL` | `http://localhost:1234` | LM Studio server URL |
-| `CUE_LMSTUDIO_MODEL` | `local-model` | LM Studio model name |
-| `CUE_LLM_TEMPERATURE` | `0.0` | LLM temperature |
-| `CUE_LLM_TIMEOUT_SECONDS` | `60` | LLM request timeout |
-| `CUE_LLM_BUDGET_WARNING_USD` | `20.0` | Monthly estimated spend warning threshold |
-| `CUE_LLM_MONTHLY_BUDGET_USD` | `50.0` | Monthly estimated spend hard-stop threshold |
-| `CUE_LLM_BUDGET_ENFORCE_HARD_STOP` | `true` | Skip remote providers when budget hard-stop is exceeded |
-| `CUE_LLM_COST_OPENAI_INPUT_PER_1K` | `0.005` | Estimated OpenAI input token cost (USD per 1k) |
-| `CUE_LLM_COST_OPENAI_OUTPUT_PER_1K` | `0.015` | Estimated OpenAI output token cost (USD per 1k) |
-| `CUE_LLM_COST_ANTHROPIC_INPUT_PER_1K` | `0.003` | Estimated Anthropic input token cost (USD per 1k) |
-| `CUE_LLM_COST_ANTHROPIC_OUTPUT_PER_1K` | `0.015` | Estimated Anthropic output token cost (USD per 1k) |
-| `CUE_LLM_COST_OPENROUTER_INPUT_PER_1K` | `0.003` | Estimated OpenRouter input token cost (USD per 1k) |
-| `CUE_LLM_COST_OPENROUTER_OUTPUT_PER_1K` | `0.010` | Estimated OpenRouter output token cost (USD per 1k) |
-| `CUE_LLM_COST_LMSTUDIO_INPUT_PER_1K` | `0.0` | Estimated LM Studio input token cost (USD per 1k) |
-| `CUE_LLM_COST_LMSTUDIO_OUTPUT_PER_1K` | `0.0` | Estimated LM Studio output token cost (USD per 1k) |
-| `CUE_TELEGRAM_BOT_TOKEN` | `""` | Telegram bot token |
-| `CUE_TELEGRAM_ADMIN_CHAT_ID` | `0` | Admin chat ID for approvals |
-| `CUE_TELEGRAM_ADMIN_USER_IDS` | `[]` | Explicit admin user IDs for RBAC bootstrap |
-| `CUE_TELEGRAM_OPERATOR_USER_IDS` | `[]` | Operator user IDs allowed to approve high-risk actions |
-| `CUE_NOTIFICATIONS_ENABLED` | `true` | Enable operational Telegram notifications |
-| `CUE_NOTIFICATION_DELIVERY_MODE` | `immediate` | Notification delivery mode: `immediate`, `hourly`, or `daily` |
-| `CUE_NOTIFICATION_PRIORITY_THRESHOLD` | `medium` | Minimum notification priority to send |
-| `CUE_NOTIFICATION_QUIET_HOURS_START` | `22` | Quiet-hours start hour (0-23) in notification timezone |
-| `CUE_NOTIFICATION_QUIET_HOURS_END` | `7` | Quiet-hours end hour (0-23) in notification timezone |
-| `CUE_NOTIFICATION_TIMEZONE` | `UTC` | IANA timezone for quiet-hours evaluation |
-| `CUE_NOTIFICATION_HOURLY_DIGEST_CRON` | `0 * * * *` | Cron schedule for hourly/catch-up notification digest |
-| `CUE_NOTIFICATION_DAILY_DIGEST_CRON` | `0 8 * * *` | Cron schedule for daily notification digest |
-| `CUE_STATE_DB_PATH` | `cue_state.db` | SQLite state database path |
-| `CUE_SOUL_MD_PATH` | `SOUL.md` | Agent identity file path |
-| `CUE_SKILLS_DIR` | `skills` | Skills directory path |
-| `CUE_SKILLS_HOT_RELOAD` | `true` | Enable skill hot-reloading |
-| `CUE_SKILLS_REGISTRY_INDEX_PATH` | `skills/registry/index.json` | Marketplace registry index path |
-| `CUE_SKILLS_REGISTRY_PACKAGES_DIR` | `skills/registry_packages` | Marketplace packaged skill source directory |
-| `CUE_SKILLS_REGISTRY_STATE_PATH` | `skills/.marketplace-installed.json` | Installed marketplace skill state file |
-| `CUE_HIGH_RISK_TOOLS` | `["run_shell","write_file","send_telegram"]` | Tools requiring approval |
-| `CUE_APPROVAL_REQUIRED_LEVELS` | `["high","critical"]` | Risk levels that trigger mandatory approval |
-| `CUE_RISK_RULES_PATH` | `skills/risk_rules.json` | Path to JSON risk policy rules file |
-| `CUE_RISK_SANDBOX_DRY_RUN` | `false` | Auto-deny non-low-risk approvals for safe policy testing |
-| `CUE_REQUIRE_APPROVAL` | `true` | Enable HITL approval gates |
-| `CUE_MULTI_USER_ENABLED` | `true` | Enable multi-user role-based access control |
-| `CUE_MULTI_USER_BOOTSTRAP_FIRST_USER` | `true` | Auto-promote first seen user to admin only when no admin exists |
-| `CUE_HEARTBEAT_ENABLED` | `false` | Enable scheduled tasks |
-| `CUE_DAILY_SUMMARY_CRON` | `0 8 * * *` | Cron for daily summary |
-| `CUE_LOOP_ENABLED` | `false` | Enable autonomous loop alongside Telegram |
-| `CUE_LOOP_INTERVAL_SECONDS` | `30` | Seconds between loop iterations |
-| `CUE_TASK_QUEUE_ENABLED` | `true` | Enable persistent SQLite task queue scheduling |
-| `CUE_TASK_QUEUE_MAX_LIST` | `20` | Max tasks returned by `/tasks` |
-| `CUE_TASK_QUEUE_RETRY_FAILED_ATTEMPTS` | `2` | Retry attempts before marking task failed |
-| `CUE_TASK_QUEUE_AUTO_SUBTASKS_ENABLED` | `true` | Allow loop agent to generate sub-tasks |
-| `CUE_TASK_QUEUE_AUTO_SUBTASKS_MAX` | `3` | Max auto-generated sub-tasks per parent task |
-| `CUE_MULTI_AGENT_ENABLED` | `true` | Enable multi-agent delegation for child queue tasks |
-| `CUE_MULTI_AGENT_MAX_CONCURRENT` | `3` | Maximum concurrent sub-agents during handoff |
-| `CUE_MULTI_AGENT_SUBAGENT_TIMEOUT_SECONDS` | `120` | Timeout per sub-agent before kill/timeout state |
-| `CUE_MULTI_AGENT_DEFAULT_PROVIDER_PREFERENCE` | `auto` | Preferred provider for sub-agents (`auto`, `openai`, `anthropic`, `openrouter`, `lmstudio`) |
-| `CUE_WORKFLOWS_ENABLED` | `true` | Enable custom workflow builder execution engine |
-| `CUE_WORKFLOWS_DIR` | `workflows` | Directory containing hot-reloadable `*.yaml` workflow definitions |
-| `CUE_WORKFLOWS_HOT_RELOAD` | `true` | Enable filesystem watcher for workflow definition changes |
-| `CUE_HEALTHCHECK_ENABLED` | `true` | Enable `/healthz` endpoint for probes |
-| `CUE_HEALTHCHECK_HOST` | `0.0.0.0` | Health endpoint bind host |
-| `CUE_HEALTHCHECK_PORT` | `8080` | Health endpoint bind port |
-| `CUE_DASHBOARD_ENABLED` | `false` | Enable authenticated web monitoring dashboard |
-| `CUE_DASHBOARD_USERNAME` | `admin` | Basic auth username for dashboard routes |
-| `CUE_DASHBOARD_PASSWORD` | `change-me` | Basic auth password for dashboard routes |
-| `CUE_DASHBOARD_TIMELINE_LIMIT` | `200` | Max in-memory action timeline entries |
-| `CUE_TELEGRAM_WEBHOOK_URL` | `""` | Public HTTPS webhook URL registered with Telegram |
-| `CUE_TELEGRAM_WEBHOOK_LISTEN_HOST` | `0.0.0.0` | Local bind host for webhook listener |
-| `CUE_TELEGRAM_WEBHOOK_LISTEN_PORT` | `8081` | Local bind port for webhook listener |
-| `CUE_TELEGRAM_WEBHOOK_PATH` | `/telegram/webhook` | Local HTTP path accepted for Telegram webhook POSTs |
-| `CUE_TELEGRAM_WEBHOOK_SECRET_TOKEN` | `""` | Required secret token verified against Telegram header |
-| `CUE_TELEGRAM_WEBHOOK_DROP_PENDING_UPDATES` | `false` | Drop pending Telegram updates when setting webhook |
-| `CUE_AUDIT_RETENTION_DAYS` | `30` | Days to keep audit records before cleanup |
-| `CUE_AUDIT_CLEANUP_CRON` | `15 3 * * *` | Daily cron for audit retention cleanup |
-| `CUE_RUN_MODE` | (CLI `--mode`) | Docker/compose: `polling`, `webhook`, `loop`, or `once` |
-| `CUE_RETRY_TOOL_ATTEMPTS` | `3` | Max retries for tool execution |
-| `CUE_RETRY_TELEGRAM_ATTEMPTS` | `5` | Max retries for Telegram API calls |
-| `CUE_RETRY_LLM_ATTEMPTS` | `3` | Max retries for LLM requests |
-| `CUE_RETRY_BASE_DELAY_SECONDS` | `0.5` | Base delay for exponential backoff |
-| `CUE_RETRY_MAX_DELAY_SECONDS` | `5.0` | Max delay between retries |
-| `CUE_RETRY_JITTER_SECONDS` | `0.2` | Jitter added to retry delay |
-| `CUE_CIRCUIT_BREAKER_FAILURES` | `3` | Failures before circuit opens |
-| `CUE_CIRCUIT_BREAKER_COOLDOWN_SECONDS` | `300` | Cooldown before retry after circuit open |
+| Variable                                      | Default                                      | Description                                                                                 |
+| --------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `CUE_OPENAI_API_KEY`                          | `""`                                         | OpenAI API key                                                                              |
+| `CUE_OPENAI_MODEL`                            | `gpt-4o`                                     | OpenAI model name                                                                           |
+| `CUE_OPENAI_BASE_URL`                         | `https://api.openai.com`                     | OpenAI base URL                                                                             |
+| `CUE_ANTHROPIC_API_KEY`                       | `""`                                         | Anthropic API key                                                                           |
+| `CUE_ANTHROPIC_MODEL`                         | `claude-sonnet-4-20250514`                   | Claude model name                                                                           |
+| `CUE_OPENROUTER_API_KEY`                      | `""`                                         | OpenRouter API key                                                                          |
+| `CUE_OPENROUTER_MODEL`                        | `openai/gpt-4o`                              | OpenRouter model name                                                                       |
+| `CUE_OPENROUTER_BASE_URL`                     | `https://openrouter.ai/api`                  | OpenRouter base URL                                                                         |
+| `CUE_LMSTUDIO_BASE_URL`                       | `http://localhost:1234`                      | LM Studio server URL                                                                        |
+| `CUE_LMSTUDIO_MODEL`                          | `local-model`                                | LM Studio model name                                                                        |
+| `CUE_LLM_TEMPERATURE`                         | `0.0`                                        | LLM temperature                                                                             |
+| `CUE_LLM_TIMEOUT_SECONDS`                     | `60`                                         | LLM request timeout                                                                         |
+| `CUE_LLM_BUDGET_WARNING_USD`                  | `20.0`                                       | Monthly estimated spend warning threshold                                                   |
+| `CUE_LLM_MONTHLY_BUDGET_USD`                  | `50.0`                                       | Monthly estimated spend hard-stop threshold                                                 |
+| `CUE_LLM_BUDGET_ENFORCE_HARD_STOP`            | `true`                                       | Skip remote providers when budget hard-stop is exceeded                                     |
+| `CUE_LLM_COST_OPENAI_INPUT_PER_1K`            | `0.005`                                      | Estimated OpenAI input token cost (USD per 1k)                                              |
+| `CUE_LLM_COST_OPENAI_OUTPUT_PER_1K`           | `0.015`                                      | Estimated OpenAI output token cost (USD per 1k)                                             |
+| `CUE_LLM_COST_ANTHROPIC_INPUT_PER_1K`         | `0.003`                                      | Estimated Anthropic input token cost (USD per 1k)                                           |
+| `CUE_LLM_COST_ANTHROPIC_OUTPUT_PER_1K`        | `0.015`                                      | Estimated Anthropic output token cost (USD per 1k)                                          |
+| `CUE_LLM_COST_OPENROUTER_INPUT_PER_1K`        | `0.003`                                      | Estimated OpenRouter input token cost (USD per 1k)                                          |
+| `CUE_LLM_COST_OPENROUTER_OUTPUT_PER_1K`       | `0.010`                                      | Estimated OpenRouter output token cost (USD per 1k)                                         |
+| `CUE_LLM_COST_LMSTUDIO_INPUT_PER_1K`          | `0.0`                                        | Estimated LM Studio input token cost (USD per 1k)                                           |
+| `CUE_LLM_COST_LMSTUDIO_OUTPUT_PER_1K`         | `0.0`                                        | Estimated LM Studio output token cost (USD per 1k)                                          |
+| `CUE_TELEGRAM_BOT_TOKEN`                      | `""`                                         | Telegram bot token                                                                          |
+| `CUE_TELEGRAM_ADMIN_CHAT_ID`                  | `0`                                          | Admin chat ID for approvals                                                                 |
+| `CUE_TELEGRAM_ADMIN_USER_IDS`                 | `[]`                                         | Explicit admin user IDs for RBAC bootstrap                                                  |
+| `CUE_TELEGRAM_OPERATOR_USER_IDS`              | `[]`                                         | Operator user IDs allowed to approve high-risk actions                                      |
+| `CUE_NOTIFICATIONS_ENABLED`                   | `true`                                       | Enable operational Telegram notifications                                                   |
+| `CUE_NOTIFICATION_DELIVERY_MODE`              | `immediate`                                  | Notification delivery mode: `immediate`, `hourly`, or `daily`                               |
+| `CUE_NOTIFICATION_PRIORITY_THRESHOLD`         | `medium`                                     | Minimum notification priority to send                                                       |
+| `CUE_NOTIFICATION_QUIET_HOURS_START`          | `22`                                         | Quiet-hours start hour (0-23) in notification timezone                                      |
+| `CUE_NOTIFICATION_QUIET_HOURS_END`            | `7`                                          | Quiet-hours end hour (0-23) in notification timezone                                        |
+| `CUE_NOTIFICATION_TIMEZONE`                   | `UTC`                                        | IANA timezone for quiet-hours evaluation                                                    |
+| `CUE_NOTIFICATION_HOURLY_DIGEST_CRON`         | `0 * * * *`                                  | Cron schedule for hourly/catch-up notification digest                                       |
+| `CUE_NOTIFICATION_DAILY_DIGEST_CRON`          | `0 8 * * *`                                  | Cron schedule for daily notification digest                                                 |
+| `CUE_STATE_DB_PATH`                           | `cue_state.db`                               | SQLite state database path                                                                  |
+| `CUE_SOUL_MD_PATH`                            | `SOUL.md`                                    | Agent identity file path                                                                    |
+| `CUE_SKILLS_DIR`                              | `skills`                                     | Skills directory path                                                                       |
+| `CUE_SKILLS_HOT_RELOAD`                       | `true`                                       | Enable skill hot-reloading                                                                  |
+| `CUE_SKILLS_REGISTRY_INDEX_PATH`              | `skills/registry/index.json`                 | Marketplace registry index path                                                             |
+| `CUE_SKILLS_REGISTRY_PACKAGES_DIR`            | `skills/registry_packages`                   | Marketplace packaged skill source directory                                                 |
+| `CUE_SKILLS_REGISTRY_STATE_PATH`              | `skills/.marketplace-installed.json`         | Installed marketplace skill state file                                                      |
+| `CUE_HIGH_RISK_TOOLS`                         | `["run_shell","write_file","send_telegram"]` | Tools requiring approval                                                                    |
+| `CUE_APPROVAL_REQUIRED_LEVELS`                | `["high","critical"]`                        | Risk levels that trigger mandatory approval                                                 |
+| `CUE_RISK_RULES_PATH`                         | `skills/risk_rules.json`                     | Path to JSON risk policy rules file                                                         |
+| `CUE_RISK_SANDBOX_DRY_RUN`                    | `false`                                      | Auto-deny non-low-risk approvals for safe policy testing                                    |
+| `CUE_REQUIRE_APPROVAL`                        | `true`                                       | Enable HITL approval gates                                                                  |
+| `CUE_MULTI_USER_ENABLED`                      | `true`                                       | Enable multi-user role-based access control                                                 |
+| `CUE_MULTI_USER_BOOTSTRAP_FIRST_USER`         | `true`                                       | Auto-promote first seen user to admin only when no admin exists                             |
+| `CUE_HEARTBEAT_ENABLED`                       | `false`                                      | Enable scheduled tasks                                                                      |
+| `CUE_DAILY_SUMMARY_CRON`                      | `0 8 * * *`                                  | Cron for daily summary                                                                      |
+| `CUE_LOOP_ENABLED`                            | `false`                                      | Enable autonomous loop alongside Telegram                                                   |
+| `CUE_LOOP_INTERVAL_SECONDS`                   | `30`                                         | Seconds between loop iterations                                                             |
+| `CUE_TASK_QUEUE_ENABLED`                      | `true`                                       | Enable persistent SQLite task queue scheduling                                              |
+| `CUE_TASK_QUEUE_MAX_LIST`                     | `20`                                         | Max tasks returned by `/tasks`                                                              |
+| `CUE_TASK_QUEUE_RETRY_FAILED_ATTEMPTS`        | `2`                                          | Retry attempts before marking task failed                                                   |
+| `CUE_TASK_QUEUE_AUTO_SUBTASKS_ENABLED`        | `true`                                       | Allow loop agent to generate sub-tasks                                                      |
+| `CUE_TASK_QUEUE_AUTO_SUBTASKS_MAX`            | `3`                                          | Max auto-generated sub-tasks per parent task                                                |
+| `CUE_MULTI_AGENT_ENABLED`                     | `true`                                       | Enable multi-agent delegation for child queue tasks                                         |
+| `CUE_MULTI_AGENT_MAX_CONCURRENT`              | `3`                                          | Maximum concurrent sub-agents during handoff                                                |
+| `CUE_MULTI_AGENT_SUBAGENT_TIMEOUT_SECONDS`    | `120`                                        | Timeout per sub-agent before kill/timeout state                                             |
+| `CUE_MULTI_AGENT_DEFAULT_PROVIDER_PREFERENCE` | `auto`                                       | Preferred provider for sub-agents (`auto`, `openai`, `anthropic`, `openrouter`, `lmstudio`) |
+| `CUE_WORKFLOWS_ENABLED`                       | `true`                                       | Enable custom workflow builder execution engine                                             |
+| `CUE_WORKFLOWS_DIR`                           | `workflows`                                  | Directory containing hot-reloadable `*.yaml` workflow definitions                           |
+| `CUE_WORKFLOWS_HOT_RELOAD`                    | `true`                                       | Enable filesystem watcher for workflow definition changes                                   |
+| `CUE_HEALTHCHECK_ENABLED`                     | `true`                                       | Enable `/healthz` endpoint for probes                                                       |
+| `CUE_HEALTHCHECK_HOST`                        | `0.0.0.0`                                    | Health endpoint bind host                                                                   |
+| `CUE_HEALTHCHECK_PORT`                        | `8080`                                       | Health endpoint bind port                                                                   |
+| `CUE_DASHBOARD_ENABLED`                       | `false`                                      | Enable authenticated web monitoring dashboard                                               |
+| `CUE_DASHBOARD_USERNAME`                      | `admin`                                      | Basic auth username for dashboard routes                                                    |
+| `CUE_DASHBOARD_PASSWORD`                      | `change-me`                                  | Basic auth password for dashboard routes                                                    |
+| `CUE_DASHBOARD_TIMELINE_LIMIT`                | `200`                                        | Max in-memory action timeline entries                                                       |
+| `CUE_TELEGRAM_WEBHOOK_URL`                    | `""`                                         | Public HTTPS webhook URL registered with Telegram                                           |
+| `CUE_TELEGRAM_WEBHOOK_LISTEN_HOST`            | `0.0.0.0`                                    | Local bind host for webhook listener                                                        |
+| `CUE_TELEGRAM_WEBHOOK_LISTEN_PORT`            | `8081`                                       | Local bind port for webhook listener                                                        |
+| `CUE_TELEGRAM_WEBHOOK_PATH`                   | `/telegram/webhook`                          | Local HTTP path accepted for Telegram webhook POSTs                                         |
+| `CUE_TELEGRAM_WEBHOOK_SECRET_TOKEN`           | `""`                                         | Required secret token verified against Telegram header                                      |
+| `CUE_TELEGRAM_WEBHOOK_DROP_PENDING_UPDATES`   | `false`                                      | Drop pending Telegram updates when setting webhook                                          |
+| `CUE_AUDIT_RETENTION_DAYS`                    | `30`                                         | Days to keep audit records before cleanup                                                   |
+| `CUE_AUDIT_CLEANUP_CRON`                      | `15 3 * * *`                                 | Daily cron for audit retention cleanup                                                      |
+| `CUE_RUN_MODE`                                | (CLI `--mode`)                               | Docker/compose: `polling`, `webhook`, `loop`, or `once`                                     |
+| `CUE_RETRY_TOOL_ATTEMPTS`                     | `3`                                          | Max retries for tool execution                                                              |
+| `CUE_RETRY_TELEGRAM_ATTEMPTS`                 | `5`                                          | Max retries for Telegram API calls                                                          |
+| `CUE_RETRY_LLM_ATTEMPTS`                      | `3`                                          | Max retries for LLM requests                                                                |
+| `CUE_RETRY_BASE_DELAY_SECONDS`                | `0.5`                                        | Base delay for exponential backoff                                                          |
+| `CUE_RETRY_MAX_DELAY_SECONDS`                 | `5.0`                                        | Max delay between retries                                                                   |
+| `CUE_RETRY_JITTER_SECONDS`                    | `0.2`                                        | Jitter added to retry delay                                                                 |
+| `CUE_CIRCUIT_BREAKER_FAILURES`                | `3`                                          | Failures before circuit opens                                                               |
+| `CUE_CIRCUIT_BREAKER_COOLDOWN_SECONDS`        | `300`                                        | Cooldown before retry after circuit open                                                    |
 
 ## License
 
