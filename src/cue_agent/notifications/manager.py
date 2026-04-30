@@ -62,6 +62,7 @@ class NotificationManager:
         self._quiet_start = int(config.notification_quiet_hours_start) % 24
         self._quiet_end = int(config.notification_quiet_hours_end) % 24
         self._tz = self._resolve_timezone(config.notification_timezone)
+        self._pending_flush = False
 
     @staticmethod
     def _resolve_timezone(name: str) -> ZoneInfo:
@@ -137,9 +138,15 @@ class NotificationManager:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
+            # No event loop running (e.g. called from a sync thread during startup).
+            # Queue the flush for the next emit() that finds a running loop.
+            self._pending_flush = True
             return
         if self._flush_task is not None and not self._flush_task.done():
             return
+        # Drain any deferred flushes from before the loop was running
+        if self._pending_flush:
+            self._pending_flush = False
         self._flush_task = loop.create_task(self._flush_background(batched))
 
     async def _flush_background(self, batched: bool) -> None:

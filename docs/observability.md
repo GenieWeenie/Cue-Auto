@@ -4,7 +4,7 @@ This document describes what CueAgent logs, how to use it for cost/latency/error
 
 ## What is logged today
 
-- **Application lifecycle** — Startup, shutdown, and mode (polling/webhook/loop). Log level is controlled by `EAP_LOG_LEVEL` and optional `CUE_LOG_LEVEL_*` per-module overrides (e.g. `CUE_LOG_LEVEL_APP`, `CUE_LOG_LEVEL_BRAIN`).
+- **Application lifecycle** — Startup, shutdown, and mode (polling/webhook/loop). Log level is controlled by `CUE_LOG_LEVEL` (or deprecated `EAP_LOG_LEVEL`) and optional `CUE_LOG_LEVEL_*` per-module overrides (e.g. `CUE_LOG_LEVEL_APP`, `CUE_LOG_LEVEL_BRAIN`).
 - **LLM usage** — The LLM router records per-provider request counts, token usage, latency, and estimated cost. These are exposed on the **health endpoint** (`/healthz`) and in the **dashboard** (when enabled) under provider metrics. Use `/usage` in Telegram for monthly spend and budget thresholds.
 - **Tool execution** — Tool calls and outcomes are recorded in the **audit trail** (event type, action, risk, outcome). Export via `/audit` or `cue-agent --export-audit-format`.
 - **Approvals** — Approval requests and decisions are written to the audit trail and can trigger notifications.
@@ -15,7 +15,7 @@ This document describes what CueAgent logs, how to use it for cost/latency/error
 
 - **Cost** — Estimated per-request cost is computed from token counts and `CUE_LLM_COST_*_PER_1K` settings. Monthly totals and budget warnings/hard-stops are enforced; see `/usage` and `CUE_LLM_BUDGET_*`.
 - **Latency** — Request latency is tracked per provider in the router and surfaced in dashboard/provider views. For deeper analysis, enable DEBUG logging for the brain module (e.g. `CUE_LOG_LEVEL_BRAIN=DEBUG`) in non-production or sample in production.
-- **Structured logs** — When `EAP_LOG_FORMAT=json` is set, log output is JSON; you can ship it to a log aggregator (e.g. Datadog, Loki, CloudWatch) and query by correlation ID or module.
+- **Structured logs** — When `CUE_LOG_FORMAT=json` (or deprecated `EAP_LOG_FORMAT=json`) is set, log output is JSON; you can ship it to a log aggregator (e.g. Datadog, Loki, CloudWatch) and query by correlation ID or module.
 
 ## Errors and alerts
 

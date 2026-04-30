@@ -51,6 +51,11 @@ class VectorMemory:
     def is_available(self) -> bool:
         return self._enabled and self._available and self._collection is not None
 
+    def close(self) -> None:
+        """Release the ChromaDB collection reference."""
+        self._collection = None
+        self._available = False
+
     def add_turn(self, chat_id: str, role: str, content: str, run_id: str | None = None) -> None:
         """Add one conversation turn to semantic memory."""
         if not content.strip():

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 import pytest
@@ -261,3 +262,54 @@ def test_notification_manager_emit_thread_safety():
         t.join()
 
     assert manager.queue_size() == num_threads * 10
+
+
+@pytest.mark.asyncio
+async def test_deferred_flush_drains_when_loop_becomes_available():
+    """Events emitted before the loop is running get flushed on the next emit with a loop."""
+    bot = _FakeBot()
+    manager = NotificationManager(
+        CueConfig(
+            notifications_enabled=True,
+            notification_delivery_mode="immediate",
+            notification_priority_threshold="low",
+            notification_quiet_hours_start=22,
+            notification_quiet_hours_end=7,
+            notification_timezone="UTC",
+        ),
+        bot=bot,
+        admin_chat_id=42,
+        now_provider=_make_now(12),
+    )
+
+    # Simulate emit() from a sync thread with no running loop
+    import threading
+
+    def emit_without_loop():
+        manager.emit(
+            category="test",
+            priority="high",
+            title="Deferred",
+            body="Queued before loop",
+        )
+
+    t = threading.Thread(target=emit_without_loop)
+    t.start()
+    t.join()
+
+    assert manager.queue_size() == 1
+    assert manager._pending_flush is True
+
+    # Now emit from within the loop — should drain the pending flush
+    manager.emit(
+        category="test",
+        priority="medium",
+        title="Triggers flush",
+        body="Now with loop",
+    )
+
+    assert manager._pending_flush is False
+    # Give the flush task a moment
+    await asyncio.sleep(0.05)
+    assert manager.queue_size() == 0
+    assert len(bot.sent) >= 1

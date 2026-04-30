@@ -21,7 +21,11 @@ def test_setup_logging_json_format(monkeypatch):
     monkeypatch.setenv("EAP_LOG_FORMAT", "json")
     monkeypatch.setenv("EAP_LOG_LEVEL", "INFO")
 
-    setup_logging(stream=stream)
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        setup_logging(stream=stream)
 
     logger = logging.getLogger("cue_agent.test")
     with correlation_context("corr-test"):
@@ -40,7 +44,62 @@ def test_setup_logging_per_module_levels(monkeypatch):
     monkeypatch.setenv("CUE_LOG_LEVEL_BRAIN", "DEBUG")
     monkeypatch.setenv("CUE_LOG_LEVEL_LOOP", "WARNING")
 
-    setup_logging(stream=stream)
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        setup_logging(stream=stream)
 
     assert logging.getLogger("cue_agent.brain").level == logging.DEBUG
     assert logging.getLogger("cue_agent.loop").level == logging.WARNING
+
+
+def test_setup_logging_cue_log_level_canonical(monkeypatch):
+    """CUE_LOG_LEVEL and CUE_LOG_FORMAT are the canonical env var names."""
+    stream = io.StringIO()
+    monkeypatch.setenv("CUE_LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("CUE_LOG_FORMAT", "json")
+
+    setup_logging(stream=stream)
+
+    root = logging.getLogger()
+    assert root.level == logging.DEBUG
+
+    logger = logging.getLogger("cue_agent.canonical_test")
+    with correlation_context("corr-canon"):
+        logger.info("canonical test")
+
+    payload = json.loads(stream.getvalue().strip())
+    assert payload["message"] == "canonical test"
+    assert payload["correlation_id"] == "corr-canon"
+
+
+def test_setup_logging_eap_log_level_deprecated_fallback(monkeypatch):
+    """EAP_LOG_LEVEL still works as a fallback and emits DeprecationWarning."""
+    stream = io.StringIO()
+    monkeypatch.delenv("CUE_LOG_LEVEL", raising=False)
+    monkeypatch.setenv("EAP_LOG_LEVEL", "WARNING")
+    monkeypatch.delenv("CUE_LOG_FORMAT", raising=False)
+    monkeypatch.delenv("EAP_LOG_FORMAT", raising=False)
+
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        setup_logging(stream=stream)
+
+    root = logging.getLogger()
+    assert root.level == logging.WARNING
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+
+
+def test_setup_logging_cue_log_level_takes_priority(monkeypatch):
+    """CUE_LOG_LEVEL takes priority over EAP_LOG_LEVEL."""
+    stream = io.StringIO()
+    monkeypatch.setenv("CUE_LOG_LEVEL", "ERROR")
+    monkeypatch.setenv("EAP_LOG_LEVEL", "DEBUG")
+
+    setup_logging(stream=stream)
+
+    root = logging.getLogger()
+    assert root.level == logging.ERROR
